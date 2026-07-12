@@ -36,8 +36,9 @@ function mapError(err: { message?: string } | null): AdminRpcError {
 // refresh token restores a fresh token without a password/TOTP prompt). If the refresh itself fails,
 // rethrow so the caller prompts a full re-auth.
 //
-// NOTE: this silent-refresh-then-retry is CONDITIONAL on the 2c live-verify (refreshSession preserves
-// aal2). If that verify shows a downgrade to aal1, this handler changes to force a TOTP re-step-up.
+// VERIFIED (Slice 3 UNIT 2c, live decode): refreshSession() preserves aal2 (amr totp+password intact)
+// and advances iat past the issue time, so the refreshed token clears the 15-min freshness gate without
+// a TOTP prompt. Silent-refresh-then-retry is the correct handler (not a re-step-up).
 export async function rpc<T>(fn: string, args: Record<string, unknown> = {}): Promise<T> {
   const supabase = createClient();
   const first = await supabase.rpc(fn, args);
