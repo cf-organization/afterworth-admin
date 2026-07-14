@@ -116,18 +116,34 @@ for a natural token refresh — then click **Apply**. **Expect:** the list reloa
 
 ---
 
-## Evidence
+## Evidence — RUN 2026-07-14, ALL GREEN
 
-### Curl legs (`slice3_unit4.sh` output)
-```
-(paste here)
-```
+### Curl legs (`slice3_unit4.sh`) — 10/10 PASS
+- **A** non-admin at the raw RPC door → `403 admin_required`.
+- **B** admin aal1 at the raw RPC door → `403 mfa_required`.
+- positive control: admin aal2 → `200` rows.
+- **D (headers)** `curl -I` (prod build): `content-security-policy` (with `nonce-`), `strict-transport-security`,
+  `x-frame-options`, `x-content-type-options` all present; CSP carries a per-request nonce.
+- **F** lifecycle: create → `preview is_revoked=False/is_expired=False` → `revoke 204` →
+  `preview is_revoked=True` → `bind → P0004 invitation_revoked`.
 
-### Browser legs
-- **A** — /invitations as non-admin → _forbidden?_ ______
-- **B** — aal1 admin → step-up bounce → surfaces load? ______
-- **C** — SQL notice line: ______   ; app reload after refresh no re-login? ______
-- **D** — estate cell literal text, no alert, escaped in Elements? ______
-- **E** — token shown once; absent from storage? ______
-```
-```
+### Browser legs — PASS (driven live)
+- **A** — non-admin (`ckankeu2@gmail.com`) → middleware `is_admin=false` → **rewrite `/forbidden`**. Walled off.
+- **B** — admin (`ckankeu2+admin@gmail.com`) password → TOTP → aal2 → middleware `is_admin=true, aal=aal2` →
+  **ALLOW** on `/invitations`, `/reconciliation`, `/audit`. Surfaces render.
+- **C** — after ~15 min the admin token went stale → RPCs returned `403 stale_token_reauth_required`;
+  `rpc()` silently `refreshSession()` + retried → **surfaces repopulated on reload with no re-login**. Live
+  proof of both the freshness gate AND the silent-refresh recovery. (The crafted-`iat` SQL DO-block above
+  remains available as a deterministic gate-only check.)
+- **D** — hostile estate name `<img src=x onerror=alert(1)>` rendered as **`&lt;img src=x onerror=alert(1)&gt;`**
+  (verified via `$0.innerHTML`) — an escaped **text node**, NOT an element. **No alert fired.** React escaping is
+  the primary defense; the strict CSP (proven via `npm run start` + `curl -I`) is the second layer. Prod build
+  logs **zero** CSP violations (next-themes removed).
+- **E** — raw token shown once in the modal; **absent from all web storage** (the Supabase session lives in
+  cookies, so empty localStorage/sessionStorage/IndexedDB is the correct state).
+
+### Fixes surfaced by these browser legs (curl couldn't catch them)
+- **Gate-order divergence** (`d8d6b59`): middleware ordered `aal2 → is_admin` vs the RPC's `is_admin → aal2`;
+  a non-admin without MFA looped instead of getting `/forbidden`. Reordered to mirror the RPC.
+- **Strict CSP vs `next dev`** (`ef2bdc9`): the nonce CSP blocked Next's dev JS (the "can't log in" symptom).
+  Env-aware CSP (dev-relaxed, prod-strict); `next-themes` removed so the strict CSP console stays silent.
