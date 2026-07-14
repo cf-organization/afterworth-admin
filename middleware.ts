@@ -83,7 +83,17 @@ export async function middleware(request: NextRequest) {
       url.pathname = "/login";
       return withCsp(NextResponse.redirect(url));
     }
-    // (2) aal2 — decode from the (validated) session access token; no DB call
+    // (2) is_admin BEFORE aal2 — mirror the RPC gate order (auth -> is_admin -> aal2). A non-admin
+    //     then gets a clean /forbidden regardless of MFA state, and we never bounce a non-admin into a
+    //     step-up they cannot complete (no factor -> the login page loops back to the password form).
+    //     is_admin() is granted to authenticated and has no aal requirement, so it answers at aal1.
+    const { data: isAdmin, error } = await supabase.rpc("is_admin");
+    if (error || isAdmin !== true) {
+      const url = request.nextUrl.clone();
+      url.pathname = "/forbidden";
+      return withCsp(NextResponse.rewrite(url));
+    }
+    // (3) aal2 — only actual admins reach here, so only admins are asked to step up.
     const {
       data: { session }
     } = await supabase.auth.getSession();
@@ -92,13 +102,6 @@ export async function middleware(request: NextRequest) {
       url.pathname = "/login";
       url.searchParams.set("stepup", "1");
       return withCsp(NextResponse.redirect(url));
-    }
-    // (3) is_admin — one cheap RPC (defense-in-depth; the data RPCs enforce it too)
-    const { data: isAdmin, error } = await supabase.rpc("is_admin");
-    if (error || isAdmin !== true) {
-      const url = request.nextUrl.clone();
-      url.pathname = "/forbidden";
-      return withCsp(NextResponse.rewrite(url));
     }
   }
 
