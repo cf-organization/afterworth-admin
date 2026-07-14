@@ -27,12 +27,22 @@ each a thin client over the admin RPCs in `afterworth-api`. Next.js 14 (App Rout
   can reach nothing. The middleware decodes the `aal` claim edge-side (no DB round-trip) to bounce
   aal1 admins into step-up.
 
-- **CSP with a per-request nonce.** `middleware.ts` mints a nonce per request and emits
+- **CSP with a per-request nonce.** `middleware.ts` mints a nonce per request and (in production) emits
   `script-src 'self' 'nonce-…' 'strict-dynamic'` (no `'unsafe-inline'` for scripts). The nonce is
   forwarded on the **request** headers so Next stamps its own bootstrap scripts, and the app is
   `force-dynamic` so the injected nonce always matches the response CSP. `object-src 'none'`,
   `frame-ancestors 'none'`, `base-uri 'self'`, `form-action 'self'`. Security headers
   (HSTS, `X-Frame-Options: DENY`, `nosniff`, referrer/permissions policy) come from `next.config.mjs`.
+  - **Dev vs prod.** `next dev` Fast Refresh/HMR uses `eval()` and injects un-nonced inline scripts, so
+    a strict nonce CSP is incompatible with the dev server. The middleware therefore relaxes `script-src`
+    to `'unsafe-inline' 'unsafe-eval'` **only when `NODE_ENV !== 'production'`**; a production build keeps
+    the strict nonce. **Prove the strict CSP against `npm run build && npm run start`, never `next dev`.**
+  - **Why `next-themes` was removed.** Its FOUC-prevention inline script can't carry the nonce (React
+    blanks the `nonce` attribute in SSR), so under the strict prod CSP it was the one blocked script.
+    On a security console the CSP console is an **alarm channel** — a permanently-present benign violation
+    normalizes the report and could mask a real blocked injection, so it must stay silent by default.
+    The console is light-theme only until a nonce-compatible theming approach exists. Verified: a prod
+    build now logs **zero** CSP violations while login + all three surfaces work under `'strict-dynamic'`.
 
 - **Every attacker-influenced value is a text node.** Display names, invitee hints, actions,
   user-agents, and the full `metadata`/`detail` JSON all render as React text (auto-escaped) or inside
@@ -69,10 +79,15 @@ posture) so the app is unreachable pre-auth. Two riders that MUST land with it:
 ## Local development
 
 ```
-cp .env.example .env.local     # fill URL + publishable key (no secret key)
+cp .env.example .env.local     # fill URL + publishable key (no secret key), then edit it
 npm install
-npm run dev                    # http://localhost:3000, against live Supabase
+npm run dev                    # http://localhost:3000, against live Supabase (RELAXED dev CSP)
 npm run build && npm run lint  # both must be green
+npm run start                  # serve the prod build locally to exercise the STRICT CSP
 ```
 
-Proof matrix: `docs/UNIT4_PROOF.md` (browser legs) + `~/slice3_unit4.sh` (curl legs).
+> `.env.example` holds only placeholders — do not `cp` it over a populated `.env.local`, and never
+> commit the real key (it is gitignored).
+
+Proof matrix: `docs/UNIT4_PROOF.md` (browser legs) + `~/slice3_unit4.sh` (curl legs). The CSP/XSS
+leg (D) must be run against `npm run start` (prod build), since `next dev` serves a relaxed CSP.

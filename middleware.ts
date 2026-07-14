@@ -19,12 +19,28 @@ function decodeAal(token?: string | null): string | null {
 
 function buildCsp(nonce: string): string {
   const supabase = new URL(process.env.NEXT_PUBLIC_SUPABASE_URL!).origin;
+  // Relax the CSP for everything EXCEPT a production build. `next build` reliably sets NODE_ENV=
+  // 'production'; `next dev` sets 'development' (and if the edge runtime ever reports something else,
+  // we still fail toward the dev relaxation rather than a broken dev server). Strict CSP is proven
+  // against `next build && next start`.
+  const dev = process.env.NODE_ENV !== "production";
+
+  // DEV ONLY: `next dev` Fast Refresh/HMR uses eval() and injects inline scripts that do NOT carry the
+  // per-request nonce, so a strict nonce CSP blocks Next's own client runtime (login JS never runs).
+  // Relax script-src in development; PRODUCTION keeps the strict nonce + 'strict-dynamic'. Prove the
+  // strict CSP against a production build (`npm run build && npm run start`), never against `next dev`.
+  const scriptSrc = dev
+    ? "script-src 'self' 'unsafe-inline' 'unsafe-eval'"
+    : `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'`;
+  // Dev HMR also opens a websocket back to the dev server.
+  const connectSrc = dev ? `connect-src 'self' ${supabase} ws: wss:` : `connect-src 'self' ${supabase}`;
+
   return [
     "default-src 'self'",
-    `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'`,
+    scriptSrc,
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data:",
-    `connect-src 'self' ${supabase}`,
+    connectSrc,
     "font-src 'self'",
     "object-src 'none'",
     "base-uri 'self'",

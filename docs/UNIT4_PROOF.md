@@ -10,8 +10,13 @@ proven deterministically in the SQL editor with a crafted `iat`; the app's silen
 Run the app first (points at live Supabase; nothing is deployed until SHIP):
 
 ```
-cd afterworth-admin && npm run dev      # http://localhost:3000
+cd afterworth-admin && npm run dev      # http://localhost:3000 — RELAXED dev CSP
 ```
+
+> **CSP note:** `next dev` serves a **relaxed** CSP (Fast Refresh needs `eval`/inline). The strict
+> `'nonce-…' 'strict-dynamic'` CSP only exists in a production build, so **leg D must be run against
+> `npm run build && npm run start`**, not `next dev`. Legs A/B/C/E behave the same in either mode.
+> A prod build has been verified to log **zero** CSP violations while login + all surfaces work.
 
 | Leg | What it proves | Where |
 |-----|----------------|-------|
