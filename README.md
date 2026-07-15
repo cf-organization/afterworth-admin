@@ -5,6 +5,10 @@ each a thin client over the admin RPCs in `afterworth-api`. Next.js 14 (App Rout
 
 ## Security posture (read this first)
 
+- **Two gates in series (edge + app).** Cloudflare Access fronts `admin.minifam.com` (edge identity —
+  email-allowlist One-Time PIN), and behind it the app enforces Supabase identity (aal2 + `is_admin`).
+  The `*.vercel.app` default door is closed. See **Network exposure** below; the app-level gates that
+  follow are the inner, proven boundary.
 - **No `service_role` key. Ever.** This app authenticates as the **signed-in admin** and calls
   Supabase RPCs with *their* JWT (publishable/anon key + the user's bearer token). There is no secret
   key in the client, the server components, the middleware, or the env. RLS and every RPC gate apply
@@ -63,18 +67,42 @@ aal2 access token (verified live — refresh preserves `aal2` and advances `iat`
 `stale_token_reauth_required`, refreshes once, and retries with no user prompt. Bounding the *session*
 (idle/absolute timeout, device binding) is a separate control, deferred to the CF Access cutover.
 
-## Network exposure — current and planned
+## Network exposure — TWO-GATE perimeter (Slice 3.9, done 2026-07-14)
 
-**Now:** the app is protected by its **auth gates only** (aal2 admin, gates in the RPCs). There is no
-network allowlist in front of it yet.
+Cloudflare Access fronts the console, so there are now **two gates in series** — an attacker must clear
+both:
 
-**Slice 3.9 — Cloudflare Access cutover (pending):** front the deployment with CF Access (SSO + device
-posture) so the app is unreachable pre-auth. Two riders that MUST land with it:
-1. **IP authority flips.** Today Vercel's edge sets `x-forwarded-for` to the client IP. Once Cloudflare
-   fronts the origin, `CF-Connecting-IP` becomes authoritative and XFF carries the CF chain — anything
-   reading client IP must switch. (Mirrors the rate-limiter's XFF note in `afterworth-api`.)
-2. **Close the default domain.** The default `*.vercel.app` URL must be redirected/disabled at cutover,
-   or CF Access is walkable straight past (the origin stays publicly reachable on its Vercel hostname).
+1. **Edge identity (Cloudflare Access).** `admin.minifam.com` is CF-proxied (orange-cloud) to the Vercel
+   project, with a CF Access self-hosted app + an **email-allowlist** policy. An unauthenticated request
+   is 302-redirected to the CF Access challenge (One-Time PIN) **before the app is ever reached** — the
+   origin serves no HTML pre-auth. Login method is **One-Time PIN** (see the setup footnote below).
+2. **App identity (Supabase).** Past the edge, the app's own gate still applies unchanged: session →
+   aal2 (MFA) → `is_admin`, enforced inside every RPC. CF Access is the outer perimeter; the Supabase
+   gates remain **the** proven security boundary.
+
+**`admin.minifam.com` is the only door — the `*.vercel.app` default is CLOSED.** The old
+`afterworth-admin.vercel.app` 307-redirects to `admin.minifam.com` and serves no app HTML. This is the
+**load-bearing** step: if the default origin URL still served the app, CF Access would be walkable
+straight past it. (Verified by curl: `vercel.app/<path>` → `307 → admin.minifam.com/<path>`.)
+
+**IP authority.** Now that Cloudflare fronts the origin, `CF-Connecting-IP` (not `x-forwarded-for`, which
+carries the CF chain) is the authoritative client IP **if the app ever reads it**. Today it does **not** —
+a code grep confirmed zero security-relevant client-IP reads (the middleware gates on session/aal2/is_admin,
+never on IP; the audit reader only *displays* backend-stamped `audit_logs.ip`). So the switch is a
+documented no-op; any future client-IP read (rate-key, allowlist) must use `CF-Connecting-IP`.
+
+**Edge HSTS** is enabled at Cloudflare (max-age 6 months; `includeSubDomains` off, Preload off) to cover
+the pre-auth edge hop; the app's own HSTS (from `next.config.mjs`) still covers authenticated responses.
+
+**Future hardening (named, NOT built): Access-JWT as a third gate.** CF injects
+`Cf-Access-Jwt-Assertion` on every allowed request. The middleware *could* verify it (fetch the team JWKS
+at `https://<team>.cloudflareaccess.com/cdn-cgi/access/certs`, validate signature + `aud` = the Access app
+AUD tag, deny if absent/invalid) as a third gate before the Supabase checks — defense-in-depth only.
+
+> **Setup footnote (CF's June-2026 default-IdP change):** new Cloudflare Zero Trust orgs now default to
+> the **Cloudflare IdP**, not One-Time PIN. To get email-PIN access you must **explicitly add One-Time PIN**
+> at Zero Trust → Settings → Authentication, then select it on the Access app. (This bit us during setup —
+> the account had Cloudflare-IdP as the default.)
 
 ## Local development
 
