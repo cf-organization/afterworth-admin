@@ -1,7 +1,16 @@
 # AfterWorth Admin
 
-Operator console for AfterWorth. Three surfaces — **Invitations**, **Reconciliation**, **Audit** —
-each a thin client over the admin RPCs in `afterworth-api`. Next.js 14 (App Router), `@supabase/ssr`.
+Operator console for AfterWorth. Four surfaces — **Invitations**, **Claims**, **Reconciliation**,
+**Audit** — each a thin client over the admin RPCs in `afterworth-api`. Next.js 14 (App Router),
+`@supabase/ssr`.
+
+**Claims** (Slice C1.5) is a **READ-ONLY** triage of death-claim submissions over
+`admin_list_claim_packets_enriched` (estate name, submitter identity, status, and the two evidence
+documents' *metadata* — title/uploaded-at, never content). The decide action (approve/reject) is
+deliberately **not exposed**: it is gated behind the document-viewer slice (**C1.6**) — a reviewer must
+be able to open the death certificate + executor ID before deciding. `admin_decide_claim_packet` is
+shipped but UI-unexposed. Approving would not release assets either (release is **C5**, counsel-gated);
+the queue marks approved claims "release pending (C5)".
 
 ## Security posture (read this first)
 
