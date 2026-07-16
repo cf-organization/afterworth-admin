@@ -6,17 +6,22 @@ import { humanizeError } from "@/lib/errors";
 // Keyset-paginated list over an admin_list_* RPC. The RPC orders by (created_at, id) DESC and takes
 // p_before_created / p_before_id as the cursor; we accumulate pages and stop when a short page returns.
 // `filters` holds the RPC's own p_* params (nulls when unset); changing them resets and reloads.
-export function useKeysetList<T extends { created_at: string; id: string | number }>(
+export function useKeysetList<T extends { id: string | number }>(
   fn: string,
   filters: Record<string, unknown>,
-  limit = 50
+  limit = 50,
+  opts?: { cursorField?: string; beforeParam?: string }
 ) {
+  // The RPC's keyset column + its matching "p_before_*" cursor param. Defaults match admin_list_invitations
+  // (created_at / p_before_created); admin_list_claim_packets_enriched uses submitted_at / p_before_submitted.
+  const cursorField = opts?.cursorField ?? "created_at";
+  const beforeParam = opts?.beforeParam ?? "p_before_created";
   const [rows, setRows] = useState<T[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
 
-  const cursorRef = useRef<{ created_at: string; id: string | number } | null>(null);
+  const cursorRef = useRef<{ cv: string; id: string | number } | null>(null);
   const filtersRef = useRef(filters);
   filtersRef.current = filters; // always read the latest filters inside load()
   const filtersKey = JSON.stringify(filters);
@@ -29,13 +34,13 @@ export function useKeysetList<T extends { created_at: string; id: string | numbe
         const cursor = reset ? null : cursorRef.current;
         const page = await rpc<T[]>(fn, {
           ...filtersRef.current,
-          p_before_created: cursor?.created_at ?? null,
+          [beforeParam]: cursor?.cv ?? null,
           p_before_id: cursor?.id ?? null,
           p_limit: limit
         });
         const last = page.at(-1);
         if (last) {
-          cursorRef.current = { created_at: last.created_at, id: last.id };
+          cursorRef.current = { cv: String((last as Record<string, unknown>)[cursorField] ?? ""), id: last.id };
         }
         setDone(page.length < limit);
         setRows((prev) => (reset ? page : [...prev, ...page]));
@@ -45,7 +50,7 @@ export function useKeysetList<T extends { created_at: string; id: string | numbe
         setLoading(false);
       }
     },
-    [fn, limit]
+    [fn, limit, cursorField, beforeParam]
   );
 
   useEffect(() => {

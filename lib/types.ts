@@ -46,3 +46,30 @@ export interface AuditRow {
   created_at: string;
   source: string; // 'server' | 'ios_forward' | 'admin'
 }
+
+// afterworth-api 0028 admin_list_claim_packets_enriched — the DISPLAY-RESOLVED claims queue. Keyset on
+// (submitted_at, id) desc. estate_name + submitter_* are attacker-influenced -> rendered as text nodes.
+// The two doc_* groups are METADATA ONLY (title/doc_type/uploaded_at) — no content/URL; viewing is C1.6, and
+// the DECIDE action (approve/reject) is gated behind it, so this surface is READ-ONLY.
+export interface EnrichedClaimPacket {
+  id: string;
+  estate_id: string;
+  estate_name: string | null;
+  requested_by: string;
+  submitter_email: string | null;
+  submitter_name: string | null;
+  status: string;
+  submitted_at: string;
+  decided_at: string | null;
+  reviewer_id: string | null;
+  reviewer_email: string | null;
+  review_notes: string | null;
+  death_certificate_doc_id: string | null;
+  death_cert_title: string | null;
+  death_cert_doc_type: string | null;
+  death_cert_uploaded_at: string | null;
+  executor_id_doc_id: string | null;
+  executor_id_title: string | null;
+  executor_id_doc_type: string | null;
+  executor_id_uploaded_at: string | null;
+}
