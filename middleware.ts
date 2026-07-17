@@ -42,6 +42,12 @@ function buildCsp(nonce: string): string {
     "img-src 'self' data:",
     connectSrc,
     "font-src 'self'",
+    // The claims evidence viewer renders a fetched PDF as an <iframe src=blob:> (the bytes come same-origin
+    // through the /api/claim-evidence BFF; no external origin, no signed URL). blob: frames are page-created
+    // and ephemeral; combined with frame-ancestors 'none' + object-src 'none' this is a minimal, justified
+    // delta (identical in dev/prod — proven against `next build && next start`). The CSP console stays silent
+    // on a real view (the alarm-channel discipline).
+    "frame-src blob:",
     "object-src 'none'",
     "base-uri 'self'",
     "frame-ancestors 'none'",
