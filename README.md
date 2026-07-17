@@ -4,13 +4,22 @@ Operator console for AfterWorth. Four surfaces — **Invitations**, **Claims**, 
 **Audit** — each a thin client over the admin RPCs in `afterworth-api`. Next.js 14 (App Router),
 `@supabase/ssr`.
 
-**Claims** (Slice C1.5) is a **READ-ONLY** triage of death-claim submissions over
-`admin_list_claim_packets_enriched` (estate name, submitter identity, status, and the two evidence
-documents' *metadata* — title/uploaded-at, never content). The decide action (approve/reject) is
-deliberately **not exposed**: it is gated behind the document-viewer slice (**C1.6**) — a reviewer must
-be able to open the death certificate + executor ID before deciding. `admin_decide_claim_packet` is
-shipped but UI-unexposed. Approving would not release assets either (release is **C5**, counsel-gated);
-the queue marks approved claims "release pending (C5)".
+**Claims** triages death-claim submissions over `admin_list_claim_packets_enriched` (estate name,
+submitter identity, status, and the two evidence documents' *metadata*). Each row links to a detail route
+**`/claims/[id]`** (Slice **C1.6b**) that renders the death certificate + executor ID **inline** and, below
+the evidence, the **decide** action (approve/reject over `admin_decide_claim_packet`) — evidence-before-decide
+enforced by layout plus a soft "you have not opened the evidence" nudge. Approving does **not** release assets
+(release is **C5**, counsel-gated); the surface marks approved claims "release pending (C5)".
+
+- **Evidence serving is proxied, never a signed URL.** The document bytes come same-origin through a BFF
+  route (`app/api/claim-evidence`) that forwards the admin's access token server-to-server to afterworth-api
+  `/api/claims/view_evidence`. That endpoint runs the admin gate INSIDE `admin_authorize_claim_evidence`
+  (resolving the storage_path from the named claim ONLY — the client sends just `{claimId, slot}`, so an
+  arbitrary-document read is unrepresentable), writes a `claim.evidence_viewed` audit, then service-role-reads
+  the object and streams it. **This app still holds no `service_role` key** — the key lives only in
+  afterworth-api. The console CSP stays `connect-src 'self'` (the browser never sees the api origin); the one
+  CSP delta is `frame-src blob:` for the inline `<iframe src=blob:>` PDF preview (proven on the prod build,
+  the console silent on a real view). Built against hand-seeded PDFs; live iOS executor upload is **C1.6a**.
 
 ## Security posture (read this first)
 
