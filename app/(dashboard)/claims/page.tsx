@@ -1,5 +1,6 @@
 "use client";
 import { useState } from "react";
+import Link from "next/link";
 import { useKeysetList } from "@/lib/useKeysetList";
 import type { EnrichedClaimPacket } from "@/lib/types";
 import { Badge } from "@/components/ui/badge";
@@ -29,16 +30,16 @@ export default function ClaimsPage() {
     <div className="space-y-4">
       <div>
         <h1 className="text-xl font-semibold">Claims review</h1>
-        <p className="text-sm text-muted-foreground">Read-only triage of death-claim submissions.</p>
+        <p className="text-sm text-muted-foreground">
+          Triage of death-claim submissions. Select a claim to open its evidence and record a decision.
+        </p>
       </div>
 
-      {/* Boundary 1 (read-only): decide is gated on the document-viewer slice — a reviewer must SEE the
-          evidence before approving/rejecting. Not a missing button; a stated state. */}
+      {/* Release honesty (C5): approving a claim does NOT release assets — that is a separate counsel-gated
+          step. Surfaced here and on the detail decide dialog so an operator is never misled. */}
       <div className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
-        This surface is <span className="font-medium">read-only</span>. Review decisions (approve / reject) are
-        enabled once document viewing ships — a reviewer must be able to open the death certificate and executor
-        ID before deciding. Approving also does <span className="font-medium">not</span> release any assets
-        (release is a separate counsel-gated step).
+        Approving a claim records a review decision only — it does <span className="font-medium">not</span> release
+        any assets. Asset release is a separate counsel-gated step (C5).
       </div>
 
       <form
@@ -79,6 +80,7 @@ export default function ClaimsPage() {
               <th className="px-3 py-2">Status</th>
               <th className="px-3 py-2">Submitted</th>
               <th className="px-3 py-2">Documents</th>
+              <th className="px-3 py-2"></th>
             </tr>
           </thead>
           <tbody>
@@ -107,11 +109,16 @@ export default function ClaimsPage() {
                   <DocMeta label="Death cert" title={c.death_cert_title} uploaded={c.death_cert_uploaded_at} present={!!c.death_certificate_doc_id} />
                   <DocMeta label="Executor ID" title={c.executor_id_title} uploaded={c.executor_id_uploaded_at} present={!!c.executor_id_doc_id} />
                 </td>
+                <td className="whitespace-nowrap px-3 py-2 text-right">
+                  <Link href={`/claims/${c.id}`} className="text-sm font-medium text-primary hover:underline">
+                    Review →
+                  </Link>
+                </td>
               </tr>
             ))}
             {list.rows.length === 0 && !list.loading && (
               <tr>
-                <td colSpan={5} className="px-3 py-6 text-center text-sm text-muted-foreground">No claims.</td>
+                <td colSpan={6} className="px-3 py-6 text-center text-sm text-muted-foreground">No claims.</td>
               </tr>
             )}
           </tbody>
