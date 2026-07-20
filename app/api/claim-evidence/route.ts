@@ -76,14 +76,15 @@ export async function POST(req: NextRequest): Promise<Response> {
     });
   }
 
-  const buf = await upstream.arrayBuffer();
-  return new Response(buf, {
-    status: 200,
-    headers: {
-      "Content-Type": upstream.headers.get("content-type") ?? "application/pdf",
-      "Content-Length": String(buf.byteLength),
-      "Cache-Control": "no-store",
-      "X-Content-Type-Options": "nosniff",
-    },
-  });
+  // Pipe the upstream stream straight through (NO arrayBuffer buffering) so this hop also stays under no
+  // buffered cap — end-to-end streaming storage → api → BFF → browser, which is what lifts the 4.5MB serving
+  // limit up to the upload_policy max (25MB). Forward Content-Length when present (progress bar).
+  const headers: Record<string, string> = {
+    "Content-Type": upstream.headers.get("content-type") ?? "application/pdf",
+    "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
+  };
+  const contentLength = upstream.headers.get("content-length");
+  if (contentLength) headers["Content-Length"] = contentLength;
+  return new Response(upstream.body, { status: 200, headers });
 }
