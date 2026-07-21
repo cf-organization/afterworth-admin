@@ -1,8 +1,15 @@
 # AfterWorth Admin
 
-Operator console for AfterWorth. Four surfaces — **Invitations**, **Claims**, **Reconciliation**,
-**Audit** — each a thin client over the admin RPCs in `afterworth-api`. Next.js 14 (App Router),
-`@supabase/ssr`.
+Operator console for AfterWorth. Five surfaces — **Invitations**, **Claims**, **Reconciliation**,
+**Audit**, **Hygiene** — each a thin client over the admin RPCs in `afterworth-api`. Next.js 14
+(App Router), `@supabase/ssr`.
+
+**Hygiene** is the orphan-upload sweeper: it reclaims `documents`-bucket objects with no owner record
+(interrupted-submit PII), older than 72h. **Preview** is a dry run (lists what would be deleted, deletes
+nothing); **Delete** is a deliberate two-step (Preview → confirm dialog) because storage deletion is
+**irreversible**. It calls `afterworth-api /api/claims/sweep_orphans` through a same-origin BFF
+(`app/api/storage-sweep`) — the byte deletion is service-role, held only by afterworth-api, never here;
+every run (dry and real) is audited (`storage.orphans_swept`).
 
 **Claims** triages death-claim submissions over `admin_list_claim_packets_enriched` (estate name,
 submitter identity, status, and the two evidence documents' *metadata*). Each row links to a detail route
