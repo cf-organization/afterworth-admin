@@ -8,6 +8,11 @@ import { createClient } from "@/lib/supabase/client";
 const NAV = [
   { href: "/invitations", label: "Invitations" },
   { href: "/claims", label: "Claims" },
+  // Phase 11-K. Death-verification CASES — the lifecycle surface, deliberately named apart from
+  // Claims, which triages `claim_packets` (the pre-Phase-11 path Phase 11 superseded). Two release
+  // vocabularies still exist server-side; giving them two names is how an operator can tell which
+  // one they are looking at.
+  { href: "/cases", label: "Death verification" },
   { href: "/reconciliation", label: "Reconciliation" },
   { href: "/audit", label: "Audit" },
   { href: "/hygiene", label: "Hygiene" }
