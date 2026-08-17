@@ -48,6 +48,21 @@ const caseFile: CaseFile = {
     submitted_at: "2026-08-02T01:00:00Z", review_status: "received",
     reviewed_at: null, review_note: null
   }],
+  owner_notice_reissue: {
+    eligible: false,
+    refusal_code: "no_current_notice",
+    case_is_current: true,
+    lifecycle_state: "death_verified",
+    owner_channel_resolvable: true,
+    prior_notice_id: null,
+    prior_generation: null,
+    prior_status: null,
+    prior_notice_kind: null,
+    prior_failure_class: null,
+    prior_accepted: false,
+    next_generation: null,
+    reissue_reason: null
+  },
   release: { reviewer_a: null, viewer_is_reviewer_a: false, authorized: null }
 };
 
@@ -56,7 +71,8 @@ vi.mock("@/lib/cases/rpc", () => ({
   getCase: vi.fn(async () => caseFile),
   reviewEvidence: vi.fn(), setAttainedLevel: vi.fn(), decideCase: vi.fn(),
   dispatchOwnerNotice: vi.fn(), beginChallengeWindow: vi.fn(),
-  authorizeRelease: vi.fn(), ownerNoticeCensus: vi.fn()
+  authorizeRelease: vi.fn(),
+  reissueOwnerNotice: vi.fn(), ownerNoticeCensus: vi.fn()
 }));
 
 vi.mock("next/navigation", () => ({
@@ -224,5 +240,46 @@ describe("6 · the data table is navigable", () => {
     await screen.findByText("Rivera Family Estate");
     const link = screen.getByRole("link", { name: "Rivera Family Estate" });
     expect(link).toHaveAttribute("href", "/cases/c1");
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════════
+// PHASE 11-OC / PHASE C — the re-notice control is reachable, labelled and deliberate
+// ══════════════════════════════════════════════════════════════════════════════════════════════════
+describe("5 · the re-notice control", () => {
+  /**
+   * ★ PRESENCE, LABEL AND DELIBERATENESS ARE THREE PROPERTIES. A control can render, carry a correct
+   * name, and still fire on one click — which is the wrong shape for an act that queues mail to a
+   * living person about their own death process and cannot be recalled once the drain sends it.
+   */
+  it("names the act rather than a direction, and lives under its own subordinate heading", async () => {
+    render(<CaseDetailPage params={{ id: "c1" }} />);
+    await screen.findByRole("heading", { name: "Rivera Family Estate", level: 1 });
+
+    const heading = screen.getByRole("heading", { name: "Re-send the owner safety notice" });
+    expect(heading.getAttribute("aria-level")).not.toBe("1");
+    expect(screen.getByRole("button", { name: /re-send owner safety notice/i })).toBeInTheDocument();
+  });
+
+  it("labels its reason field programmatically", async () => {
+    render(<CaseDetailPage params={{ id: "c1" }} />);
+    await screen.findByRole("heading", { name: "Rivera Family Estate", level: 1 });
+    const field = screen.getByLabelText("Reason (required)");
+    expect(field).toBeInTheDocument();
+    expect(field.getAttribute("id")).toBeTruthy();
+  });
+
+  it("explains its disabled state in text rather than by appearance alone", async () => {
+    // The fixture's server verdict is a refusal, so the control is disabled — and an operator who
+    // cannot perceive the disabled styling must still be told why.
+    render(<CaseDetailPage params={{ id: "c1" }} />);
+    await screen.findByRole("heading", { name: "Rivera Family Estate", level: 1 });
+    const button = screen.getByRole("button", { name: /re-send owner safety notice/i });
+    expect(button).toBeDisabled();
+    expect(button.getAttribute("aria-disabled")).toBe("true");
+    // The reason is rendered as text on the page, not conveyed by colour or opacity.
+    expect((document.body.textContent ?? "").length).toBeGreaterThan(0);
+    expect(screen.getByText(/needs a first dispatch|still queued|challenge window is open/i))
+      .toBeInTheDocument();
   });
 });

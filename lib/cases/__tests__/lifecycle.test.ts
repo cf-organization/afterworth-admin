@@ -15,16 +15,70 @@
 import { describe, expect, it } from "vitest";
 import {
   availability,
+  currentNotice,
+  DISPATCH_SUMMARY_COPY,
   dispatchSummary,
   hasCommittedNotice,
+  historicalNoticeDetail,
   IRREVERSIBLE,
   levelRank,
   meetsRequirement,
-  noticeDeliveryLabel
+  noticeStateLabel,
+  REISSUE_REFUSAL_COPY,
+  reissueAvailability
 } from "../lifecycle";
-import type { CaseFile, LifecycleState, NoticeStatus, VerificationLevel } from "../types";
+import type {
+  CaseFile,
+  CaseFileNotice,
+  LifecycleState,
+  NoticeStatus,
+  ReissueRefusalCode,
+  ReissueVerdict,
+  VerificationLevel
+} from "../types";
 
 const REVIEWER_A = "11111111-1111-4111-8111-111111111111";
+
+function makeNotice(over: Partial<CaseFileNotice> = {}): CaseFileNotice {
+  return {
+    id: "n1",
+    channel: "email",
+    notice_kind: "death_process.window_opened",
+    status: "queued",
+    requested_at: "2026-08-03T00:00:00Z",
+    dispatched_at: null,
+    attempts: 1,
+    failure_class: null,
+    case_id: "c1",
+    generation: 1,
+    superseded_by: null,
+    is_current: true,
+    notice_accepted_at: null,
+    claimed_at: null,
+    ...over
+  };
+}
+
+/**
+ * The server's verdict, defaulted to a refusal. Fail-closed in the FIXTURE too: a default of
+ * `eligible: true` would make every "the control is hidden" assertion below pass for the wrong
+ * reason, and a test fixture that leans the unsafe way is how a real default gets one.
+ */
+const NOT_ELIGIBLE: ReissueVerdict = {
+  eligible: false,
+  refusal_code: "no_current_notice",
+  case_is_current: true,
+  lifecycle_state: "challenge_window",
+  owner_channel_resolvable: true,
+  prior_notice_id: null,
+  prior_generation: null,
+  prior_status: null,
+  prior_notice_kind: null,
+  prior_failure_class: null,
+  prior_accepted: false,
+  next_generation: null,
+  reissue_reason: null
+};
 
 function makeFile(over: {
   state?: LifecycleState;
@@ -37,6 +91,9 @@ function makeFile(over: {
   configured?: boolean;
   viewerIsReviewerA?: boolean;
   decided?: boolean;
+  noticeAccepted?: boolean;
+  notices?: CaseFileNotice[];
+  reissue?: Partial<ReissueVerdict>;
 } = {}): CaseFile {
   const state = over.state ?? "death_verification_pending";
   const noticeStatus = over.noticeStatus === undefined ? null : over.noticeStatus;
@@ -72,18 +129,16 @@ function makeFile(over: {
       release_eligible_at: "2026-08-10T00:00:00Z",
       elapsed: over.elapsed ?? false
     },
-    owner_notice: noticeStatus
-      ? [{
-          id: "n1",
-          channel: "email",
-          notice_kind: "death_process.window_opened",
-          status: noticeStatus,
-          requested_at: "2026-08-03T00:00:00Z",
-          dispatched_at: null,
-          attempts: 1,
-          failure_class: over.noticeFailure ?? null
-        }]
-      : [],
+    owner_notice:
+      over.notices ??
+      (noticeStatus
+        ? [makeNotice({
+            status: noticeStatus,
+            failure_class: over.noticeFailure ?? null,
+            notice_accepted_at: over.noticeAccepted ? "2026-08-03T00:01:00Z" : null
+          })]
+        : []),
+    owner_notice_reissue: { ...NOT_ELIGIBLE, ...(over.reissue ?? {}) },
     evidence: [],
     release: {
       reviewer_a: over.decided ? REVIEWER_A : null,
@@ -140,17 +195,36 @@ describe("dispatch is initiation, never delivery", () => {
     expect(hasCommittedNotice(makeFile({ noticeStatus: null }))).toBe(false);
   });
 
-  it("no delivery label claims a person read anything", () => {
+  it("no notice label claims a person read anything, on any status or acceptance combination", () => {
     const statuses: NoticeStatus[] = [
       "queued", "processing", "dispatched", "outcomeUncertain", "failedPermanent", "cancelled"
     ];
+    let seen = 0;
     for (const s of statuses) {
-      const label = noticeDeliveryLabel(s).toLowerCase();
-      expect(label).not.toContain("notified");
-      expect(label).not.toContain("received");
-      expect(label).not.toContain("read");
-      expect(label).not.toContain("opened");
-      expect(label).not.toContain("delivered");
+      for (const accepted of [null, "2026-08-03T00:01:00Z"]) {
+        for (const current of [true, false]) {
+          const label = noticeStateLabel(
+            makeNotice({ status: s, notice_accepted_at: accepted, is_current: current })
+          ).toLowerCase();
+          seen++;
+          expect(label).not.toContain("notified");
+          expect(label).not.toContain("received");
+          expect(label).not.toContain("read");
+          expect(label).not.toContain("opened");
+          // ★ THE WORD THIS CONSOLE MAY NEVER SAY. Mailbox delivery is not established by anything
+          // this product can observe, and no combination of status and acceptance makes it true.
+          expect(label).not.toContain("delivered");
+        }
+      }
+    }
+    // POSITIVE CONTROL: the loop must actually have produced labels.
+    expect(seen).toBe(24);
+  });
+
+  it("never says `delivered` anywhere in the estate-level summary copy either", () => {
+    for (const copy of Object.values(DISPATCH_SUMMARY_COPY)) {
+      expect(copy.toLowerCase()).not.toContain("delivered");
+      expect(copy.toLowerCase()).not.toContain("notified");
     }
   });
 
@@ -345,5 +419,177 @@ describe("every unavailable answer explains itself", () => {
         }
       }
     }
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════════
+// PHASE 11-OC / PHASE C — the operator re-notice
+// ══════════════════════════════════════════════════════════════════════════════════════════════════
+
+describe("a notice label reports the FACT, never the status alone", () => {
+  /**
+   * ★ THE PAIR THAT MAKES THIS REAL. Both rows are `dispatched`. The ONLY difference is whether a
+   * provider acceptance was ever recorded, and they must reach opposite labels — otherwise the rule
+   * is a status list wearing a timestamp's clothes, which is exactly the defect Phase 11-OC exists
+   * to remove from the release door and which the console would then reintroduce on screen.
+   */
+  it("distinguishes an accepted dispatch from a legacy one with no acceptance record", () => {
+    const accepted = makeNotice({ status: "dispatched", notice_accepted_at: "2026-08-03T00:01:00Z" });
+    const legacy = makeNotice({ status: "dispatched", notice_accepted_at: null });
+
+    expect(noticeStateLabel(accepted)).toBe("Provider accepted notice");
+    expect(noticeStateLabel(legacy)).toBe("Legacy acceptance fact unavailable");
+    expect(noticeStateLabel(accepted)).not.toBe(noticeStateLabel(legacy));
+  });
+
+  it("uses the exact operator vocabulary for every current-generation state", () => {
+    expect(noticeStateLabel(makeNotice({ status: "queued" }))).toBe("Notice queued");
+    expect(noticeStateLabel(makeNotice({ status: "processing" }))).toBe("Notice processing");
+    expect(noticeStateLabel(makeNotice({ status: "outcomeUncertain" }))).toBe(
+      "Provider outcome uncertain"
+    );
+    expect(noticeStateLabel(makeNotice({ status: "failedPermanent" }))).toBe("Notice failed");
+  });
+
+  it("labels a RETIRED generation as history, whatever its delivery state was", () => {
+    for (const status of [
+      "queued", "processing", "dispatched", "outcomeUncertain", "failedPermanent", "cancelled"
+    ] as NoticeStatus[]) {
+      expect(noticeStateLabel(makeNotice({ status, is_current: false })))
+        .toBe("Historical notice generation");
+    }
+  });
+
+  it("keeps the retired generation's delivery state visible as secondary detail", () => {
+    // Losing it would leave an episode that looks re-noticed for no reason — and that evidence is
+    // precisely why the reissue was warranted.
+    expect(historicalNoticeDetail(makeNotice({ status: "failedPermanent", is_current: false })))
+      .toContain("failed");
+    expect(historicalNoticeDetail(
+      makeNotice({ status: "dispatched", is_current: false, notice_accepted_at: null })
+    )).toContain("no acceptance fact");
+    expect(historicalNoticeDetail(
+      makeNotice({ status: "dispatched", is_current: false, notice_accepted_at: "2026-08-03T00:01:00Z" })
+    )).toContain("provider accepted");
+  });
+});
+
+describe("the estate summary reads the CURRENT generation, not the newest array element", () => {
+  /**
+   * ★ ANCHORED ON INPUT THE RULE MUST CHANGE. The array is deliberately ordered with the RETIRED
+   * generation first, so a summary that read `owner_notice[0]` would describe the dead row. Ordering
+   * is not the invariant; `is_current` is.
+   */
+  const retiredFirst = [
+    makeNotice({ id: "n1", generation: 1, is_current: false, superseded_by: "n2", status: "failedPermanent" }),
+    makeNotice({ id: "n2", generation: 2, is_current: true, status: "queued",
+                 notice_kind: "death_process.window_renotice" })
+  ];
+
+  it("picks the live generation even when a retired one comes first", () => {
+    const file = makeFile({ notices: retiredFirst });
+    expect(currentNotice(file)?.id).toBe("n2");
+    expect(dispatchSummary(file)).toBe("notice_queued");
+  });
+
+  it("does not report a re-noticed estate as accepted merely because a generation was queued", () => {
+    // The whole D7 monotonicity property, on screen: queueing a warning adds no release authority,
+    // and the console must not imply otherwise.
+    expect(DISPATCH_SUMMARY_COPY[dispatchSummary(makeFile({ notices: retiredFirst }))])
+      .not.toMatch(/accepted/i);
+  });
+
+  it("separates a legacy dispatched summary from an accepted one", () => {
+    expect(dispatchSummary(makeFile({ noticeStatus: "dispatched", noticeAccepted: false })))
+      .toBe("legacy_acceptance_unavailable");
+    expect(dispatchSummary(makeFile({ noticeStatus: "dispatched", noticeAccepted: true })))
+      .toBe("provider_accepted");
+  });
+});
+
+describe("re-notice availability is the SERVER's answer, never this file's", () => {
+  it("is available exactly when the verdict says eligible", () => {
+    expect(reissueAvailability(makeFile({ reissue: { eligible: true, refusal_code: null } })).available)
+      .toBe(true);
+    expect(reissueAvailability(makeFile({ reissue: { eligible: false, refusal_code: "notice_still_queued" } })).available)
+      .toBe(false);
+  });
+
+  /**
+   * ★ THE CONSOLE DOES NOT SECOND-GUESS THE SERVER IN EITHER DIRECTION. Two files that "obviously"
+   * should not be eligible — an accepted notice, and a case that is no longer current — are handed to
+   * this function with `eligible: true`. It must still say available, because the server is the
+   * authority and a client that overrode it would be a second policy with no test in front of it.
+   */
+  it("does not override an ELIGIBLE verdict, even on a case the console would have refused", () => {
+    const accepted = makeFile({
+      noticeStatus: "dispatched",
+      noticeAccepted: true,
+      reissue: { eligible: true, refusal_code: null }
+    });
+    expect(reissueAvailability(accepted).available).toBe(true);
+
+    const stale = makeFile({
+      state: "released",
+      reissue: { eligible: true, refusal_code: null, case_is_current: false }
+    });
+    expect(reissueAvailability(stale).available).toBe(true);
+  });
+
+  it("fails CLOSED when the server projected no verdict at all", () => {
+    // An older API that does not yet carry `owner_notice_reissue` must produce a hidden control,
+    // never an available one — the routine may not even be deployed.
+    const file = makeFile();
+    delete (file as { owner_notice_reissue?: unknown }).owner_notice_reissue;
+    const a = reissueAvailability(file);
+    expect(a.available).toBe(false);
+    expect(a.reason).toBeTruthy();
+  });
+
+  it("explains every refusal code the server can return", () => {
+    const CODES: ReissueRefusalCode[] = [
+      "case_not_found", "no_verified_case", "case_not_current", "invalid_reissue_state",
+      "no_current_notice", "notice_still_queued", "notice_still_processing",
+      "notice_already_accepted", "notice_cancelled", "notice_not_reissuable",
+      "owner_channel_unreachable"
+    ];
+    for (const code of CODES) {
+      const a = reissueAvailability(makeFile({ reissue: { eligible: false, refusal_code: code } }));
+      expect(a.available).toBe(false);
+      expect(a.reason, `${code} has no operator copy`).toBeTruthy();
+      // Describes the LIFECYCLE or the queue, never the operator's permissions.
+      const reason = a.reason!.toLowerCase();
+      expect(reason).not.toContain("not allowed");
+      expect(reason).not.toContain("permission");
+      expect(reason).not.toContain("unauthorized");
+    }
+    // The copy map covers the union exactly — no orphan entry, no missing one.
+    expect(Object.keys(REISSUE_REFUSAL_COPY).sort()).toEqual([...CODES].sort());
+  });
+
+  it("degrades to a refusal, never to availability, on an unrecognised code", () => {
+    const a = reissueAvailability(
+      makeFile({ reissue: { eligible: false, refusal_code: "brand_new_code" as ReissueRefusalCode } })
+    );
+    expect(a.available).toBe(false);
+    expect(a.reason).toBeTruthy();
+  });
+
+  /**
+   * ★ THE STRUCTURAL GUARANTEE THAT THERE IS NO LOCAL MIRROR. `availability()` decides the six
+   * actions whose preconditions this file legitimately duplicates. Re-notice is not one of them and
+   * must never become one: adding a `case "reissue_owner_notice"` branch would require widening
+   * `ActionId` first, which is the loud step. This asserts the union has not been widened.
+   */
+  it("keeps re-notice out of the locally-decided ActionId set", () => {
+    const locallyDecided = [
+      "review_evidence", "set_attained_level", "decide_case",
+      "dispatch_owner_notice", "begin_challenge_window", "authorize_release"
+    ];
+    for (const id of locallyDecided) {
+      expect(availability(id as Parameters<typeof availability>[0], makeFile())).toBeTruthy();
+    }
+    // IRREVERSIBLE is typed on ActionId, so a re-notice entry could only exist if the union grew.
+    expect([...IRREVERSIBLE]).not.toContain("reissue_owner_notice");
   });
 });

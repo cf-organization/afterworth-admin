@@ -22,7 +22,13 @@
  */
 
 import { rpc } from "@/lib/rpc";
-import type { CaseFile, CaseQueueRow, CaseStatus, VerificationLevel } from "./types";
+import type {
+  CaseFile,
+  CaseQueueRow,
+  CaseStatus,
+  ReissueResult,
+  VerificationLevel,
+} from "./types";
 
 export async function listCases(opts: { status?: CaseStatus | null; limit?: number } = {}) {
   return rpc<CaseQueueRow[]>("admin_list_death_verification_cases", {
@@ -82,6 +88,32 @@ export async function beginChallengeWindow(estateId: string) {
 /** The release. No reviewer parameter — see the header. */
 export async function authorizeRelease(estateId: string, reason: string) {
   return rpc<string>("authorize_release", { p_estate: estateId, p_reason: reason });
+}
+
+/**
+ * Queues a NEW owner-safety notice generation for the CURRENT case episode (Phase 11-OC / Phase C).
+ *
+ * ★ IT TAKES A CASE AND A REASON, AND THAT LIST IS THE SAFETY PROPERTY.
+ *
+ *   · NO RECIPIENT. The address is derived inside the routine from `auth.users`, exactly as the
+ *     initial dispatch derives it. Re-notice is not a recipient-edit feature, and a parameter here
+ *     would turn a remediation control into a way to mail an arbitrary address about someone else's
+ *     estate.
+ *   · NO GENERATION and NO `reissue_reason` VOCABULARY VALUE. Both are derived server-side — the
+ *     generation under the predecessor's row lock, the vocabulary reason from the predecessor's own
+ *     status — so an operator cannot relabel an uncertain outcome as a definitive failure.
+ *   · NO ESTATE. The episode key is the CASE. An estate parameter would invite a caller to name a
+ *     process, and a notice from one death process must never speak for another.
+ *
+ * ★ A SUCCESSFUL CALL MEANS **NEW WARNING QUEUED**. It is not provider acceptance, not delivery, and
+ * not a statement that anyone has been reached. The returned row starts `queued` with a NULL
+ * acceptance stamp, and only the drain's `providerAccepted` settlement may ever stamp it.
+ */
+export async function reissueOwnerNotice(caseId: string, reason: string) {
+  return rpc<ReissueResult>("reissue_owner_safety_notice", {
+    p_case: caseId,
+    p_reason: reason,
+  });
 }
 
 /** Read-only outbox classification: counts only, never a recipient address. */
