@@ -74,6 +74,23 @@ export interface CaseFileEvidence {
   review_note: string | null;
 }
 
+/**
+ * ★ PHASE 11-OC · PHASE A/C — A NOTICE IS A GENERATION OF AN EPISODE, NOT A LONE ROW.
+ *
+ * Four of these fields exist because `status` alone cannot answer the question this console is for.
+ * `dispatched` means "the email provider accepted this message" on a row written after Phase A, and
+ * means "nobody knows, the stamp did not exist yet" on a row written before it. A console that
+ * rendered both the same way would state, on the one screen where it matters most, that a living
+ * owner was reached when nobody knows whether they were.
+ *
+ *   · `notice_accepted_at` — THE FACT. Written by exactly one branch of one server routine
+ *     (`providerAccepted`). NULL is a real answer and is rendered as one, never smoothed away.
+ *   · `case_id` / `generation` — which episode, and which attempt within it. NULL `case_id` is a
+ *     pre-Phase-A row that belongs to no provable episode.
+ *   · `superseded_by` / `is_current` — a retired generation and a live one must never be shown with
+ *     the same weight. `is_current` is projected by the server rather than derived here from a null
+ *     check, because a null check is exactly the derivation a UI gets wrong once and then keeps.
+ */
 export interface CaseFileNotice {
   id: string;
   channel: string;
@@ -83,6 +100,68 @@ export interface CaseFileNotice {
   dispatched_at: string | null;
   attempts: number;
   failure_class: string | null;
+  case_id: string | null;
+  generation: number;
+  superseded_by: string | null;
+  is_current: boolean;
+  /** The instant the PROVIDER accepted this specific message. Never delivery, never a read receipt. */
+  notice_accepted_at: string | null;
+  claimed_at: string | null;
+}
+
+/**
+ * Every reason the server will refuse a re-notice, as the server names them.
+ *
+ * ★ THIS UNION IS A MIRROR OF A SERVER VOCABULARY, AND IT IS DELIBERATELY NOT A POLICY. The console
+ * never decides eligibility — `owner_notice_reissue_assessment` does, and the case file carries its
+ * verdict. What lives here is the OPERATOR COPY for each code, which is the console's own job. The
+ * server owns the rule; the client owns the sentence.
+ */
+export type ReissueRefusalCode =
+  | "case_not_found"
+  | "no_verified_case"
+  | "case_not_current"
+  | "invalid_reissue_state"
+  | "no_current_notice"
+  | "notice_still_queued"
+  | "notice_still_processing"
+  | "notice_already_accepted"
+  | "notice_cancelled"
+  | "notice_not_reissuable"
+  | "owner_channel_unreachable";
+
+/**
+ * The server's verdict on whether this episode may be re-noticed, computed by the SAME function
+ * `reissue_owner_safety_notice` consults. The console renders it and never recomputes it.
+ */
+export interface ReissueVerdict {
+  eligible: boolean;
+  refusal_code: ReissueRefusalCode | null;
+  case_is_current: boolean;
+  lifecycle_state: LifecycleState;
+  owner_channel_resolvable: boolean;
+  prior_notice_id: string | null;
+  prior_generation: number | null;
+  prior_status: NoticeStatus | null;
+  prior_notice_kind: string | null;
+  prior_failure_class: string | null;
+  prior_accepted: boolean;
+  next_generation: number | null;
+  reissue_reason: string | null;
+}
+
+/** What `reissue_owner_safety_notice` returns. There is no recipient field, on any branch. */
+export interface ReissueResult {
+  status: "queued";
+  case_id: string;
+  notice_id: string;
+  generation: number;
+  notice_kind: string;
+  notice_accepted_at: null;
+  reissue_reason: string;
+  prior_notice_id: string;
+  prior_generation: number;
+  prior_status: NoticeStatus;
 }
 
 /** The whole payload of `admin_get_death_verification_case`. */
@@ -126,6 +205,11 @@ export interface CaseFile {
     elapsed: boolean;
   };
   owner_notice: CaseFileNotice[];
+  /**
+   * Server-calculated action availability for the Phase C re-notice. NOT a local mirror: the console
+   * offers the control iff this says `eligible`, so the two cannot drift.
+   */
+  owner_notice_reissue: ReissueVerdict;
   evidence: CaseFileEvidence[];
   release: {
     reviewer_a: string | null;

@@ -13,7 +13,9 @@
  */
 
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { noticeStateLabel } from "@/lib/cases/lifecycle";
 import type { CaseFile, CaseQueueRow } from "@/lib/cases/types";
 
 const OWNER_ADDRESS = "owner@example.invalid";
@@ -78,8 +80,29 @@ const caseFile: CaseFile = {
     requested_at: "2026-08-04T00:00:00Z",
     dispatched_at: null,
     attempts: 0,
-    failure_class: null
+    failure_class: null,
+    case_id: "c1",
+    generation: 1,
+    superseded_by: null,
+    is_current: true,
+    notice_accepted_at: null,
+    claimed_at: null
   }],
+  owner_notice_reissue: {
+    eligible: false,
+    refusal_code: "notice_still_queued",
+    case_is_current: true,
+    lifecycle_state: "challenge_window",
+    owner_channel_resolvable: true,
+    prior_notice_id: "n1",
+    prior_generation: 1,
+    prior_status: "queued",
+    prior_notice_kind: "death_process.window_opened",
+    prior_failure_class: null,
+    prior_accepted: false,
+    next_generation: null,
+    reissue_reason: null
+  },
   evidence: [{
     evidence_id: "ev1",
     document_id: "d1",
@@ -103,6 +126,7 @@ vi.mock("@/lib/cases/rpc", () => ({
   dispatchOwnerNotice: vi.fn(),
   beginChallengeWindow: vi.fn(),
   authorizeRelease: vi.fn(),
+  reissueOwnerNotice: vi.fn(),
   ownerNoticeCensus: vi.fn()
 }));
 
@@ -113,6 +137,7 @@ vi.mock("next/navigation", () => ({
 
 import CasesPage from "@/app/(dashboard)/cases/page";
 import CaseDetailPage from "@/app/(dashboard)/cases/[id]/page";
+import { reissueOwnerNotice } from "@/lib/cases/rpc";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -171,16 +196,147 @@ describe("the case file", () => {
    * legitimately be open while the email has not been sent. The screen must not smooth that into a
    * claim about a person. This fixture is exactly that case: window open, notice still queued.
    */
-  it("says dispatch INITIATED, never that the owner was notified", async () => {
+  it("describes the QUEUE, never that the owner was notified", async () => {
     render(<CaseDetailPage params={{ id: "c1" }} />);
     await screen.findByRole("heading", { name: "Rivera Family Estate", level: 1 });
     const text = (document.body.textContent ?? "").toLowerCase();
 
-    expect(text).toContain("dispatch initiated");
+    /*
+     * ★ THE POSITIVE CONTROL IS COMPUTED, NOT SPELLED. This used to assert the literal string
+     * "dispatch initiated", which pinned a sentence rather than the property — and it duly broke when
+     * Phase C replaced one label ("dispatch initiated", true of `queued`, `processing` AND
+     * `dispatched` alike) with labels that distinguish them. Deriving the expectation from
+     * `noticeStateLabel` means the control follows the vocabulary and still fails if the screen stops
+     * rendering the current generation's state at all.
+     */
+    const current = caseFile.owner_notice.find((n) => n.is_current)!;
+    expect(text).toContain(noticeStateLabel(current).toLowerCase());
+
     expect(text).not.toContain("owner was notified");
     expect(text).not.toContain("owner has been notified");
     expect(text).not.toContain("notice delivered");
     expect(text).not.toContain("email delivered");
+    // ★ THE WORD ITSELF, ANYWHERE ON THE SCREEN. Mailbox delivery is not established by anything
+    // this product observes, so no copy on this page may assert it.
+    expect(text).not.toContain("delivered");
+  });
+
+  /**
+   * ★ PHASE 11-OC — THE TWO `dispatched` ROWS THAT MUST NOT READ ALIKE.
+   *
+   * A row written after Phase A carries an acceptance stamp and genuinely means "the provider
+   * accepted this message". A row written before it carries `dispatched` with a NULL stamp and means
+   * "nobody recorded whether the provider accepted it". Rendering both as an acceptance is the
+   * console asserting, on the one screen where it matters, that a living owner was reached.
+   *
+   * The fixture is mutated between the two renders so the ONLY thing that differs is the fact.
+   */
+  it("labels a legacy dispatched notice as UNPROVEN, and an accepted one as accepted", async () => {
+    const current = caseFile.owner_notice[0]!;
+    const restore = { status: current.status, accepted: current.notice_accepted_at };
+
+    current.status = "dispatched";
+    current.notice_accepted_at = null;
+    const legacy = render(<CaseDetailPage params={{ id: "c1" }} />);
+    await screen.findByRole("heading", { name: "Rivera Family Estate", level: 1 });
+    const legacyText = (document.body.textContent ?? "").toLowerCase();
+    expect(legacyText).toContain("legacy acceptance fact unavailable");
+    expect(legacyText).not.toContain("provider accepted notice");
+    legacy.unmount();
+
+    current.notice_accepted_at = "2026-08-04T00:02:00Z";
+    render(<CaseDetailPage params={{ id: "c1" }} />);
+    await screen.findByRole("heading", { name: "Rivera Family Estate", level: 1 });
+    const acceptedText = (document.body.textContent ?? "").toLowerCase();
+    expect(acceptedText).toContain("provider accepted notice");
+    expect(acceptedText).not.toContain("legacy acceptance fact unavailable");
+    // Neither reading may claim delivery.
+    expect(acceptedText).not.toContain("delivered");
+
+    current.status = restore.status;
+    current.notice_accepted_at = restore.accepted;
+  });
+
+  /**
+   * ★ THE RE-NOTICE CONTROL FOLLOWS THE SERVER, IN BOTH DIRECTIONS.
+   *
+   * The fixture's verdict is a refusal, so the control must be disabled and must explain itself with
+   * the SERVER's reason. Flipping only the verdict — nothing else about the case — must enable it.
+   * A one-directional assertion here would pass against a console that never offered the control at
+   * all, which is the failure that would strand a genuinely broken estate.
+   */
+  it("offers re-notice iff the SERVER says eligible, and explains a refusal in the server's terms", async () => {
+    const first = render(<CaseDetailPage params={{ id: "c1" }} />);
+    await screen.findByRole("heading", { name: "Rivera Family Estate", level: 1 });
+    const disabled = screen.getByRole("button", { name: "Re-send owner safety notice" });
+    expect(disabled).toBeDisabled();
+    expect((document.body.textContent ?? "").toLowerCase()).toContain("still queued");
+    first.unmount();
+
+    const restore = { ...caseFile.owner_notice_reissue };
+    caseFile.owner_notice_reissue = {
+      ...restore,
+      eligible: true,
+      refusal_code: null,
+      prior_status: "failedPermanent",
+      prior_generation: 1,
+      next_generation: 2,
+      reissue_reason: "prior_failed_permanent"
+    };
+    render(<CaseDetailPage params={{ id: "c1" }} />);
+    await screen.findByRole("heading", { name: "Rivera Family Estate", level: 1 });
+    // Still disabled — because the REASON field is empty, which is the console's own requirement.
+    const needsReason = screen.getByRole("button", { name: "Re-send owner safety notice" });
+    expect(needsReason).toBeDisabled();
+    expect((document.body.textContent ?? "").toLowerCase()).toContain("enter a reason");
+
+    await userEvent.type(
+      screen.getByLabelText("Reason (required)"),
+      "provider rejected the first notice"
+    );
+    expect(screen.getByRole("button", { name: "Re-send owner safety notice" })).toBeEnabled();
+
+    caseFile.owner_notice_reissue = restore;
+  });
+
+  /**
+   * ★ THE SUCCESS SENTENCE IS PART OF THE CONTRACT, AND IT WAS THE ONE UNGUARDED THING IN THIS
+   * SCREEN — found by mutation, not by review: `scripts/mutateConsole.mjs` replaced it with "The
+   * owner has been notified." and every test still passed.
+   *
+   * A successful call means **NEW WARNING QUEUED**. It is not sent, not accepted, not delivered and
+   * certainly not read. An operator who reads "the owner has been notified" stops looking, and an
+   * estate that still needs remediating looks handled.
+   */
+  it("reports a re-notice as QUEUED, and never as notified, sent or delivered", async () => {
+    const restore = { ...caseFile.owner_notice_reissue };
+    caseFile.owner_notice_reissue = { ...restore, eligible: true, refusal_code: null };
+
+    render(<CaseDetailPage params={{ id: "c1" }} />);
+    await screen.findByRole("heading", { name: "Rivera Family Estate", level: 1 });
+    await userEvent.type(
+      screen.getByLabelText("Reason (required)"),
+      "provider rejected the first notice"
+    );
+
+    // The irreversible act takes two deliberate steps, not one click.
+    await userEvent.click(screen.getByRole("button", { name: "Re-send owner safety notice" }));
+    const confirm = await screen.findByRole("group", { name: /confirm: re-send owner safety notice/i });
+    expect(confirm).toBeInTheDocument();
+    await userEvent.click(
+      within(confirm).getByRole("button", { name: "Re-send owner safety notice" })
+    );
+
+    const status = await screen.findByRole("status");
+    const said = (status.textContent ?? "").toLowerCase();
+    expect(said).toContain("queued");
+    expect(said).toContain("not been sent");
+    expect(said).not.toContain("notified");
+    expect(said).not.toContain("delivered");
+    expect(said).not.toContain("accepted");
+    expect(reissueOwnerNotice).toHaveBeenCalledWith("c1", "provider rejected the first notice");
+
+    caseFile.owner_notice_reissue = restore;
   });
 
   it("states plainly that delivery cannot be observed", async () => {

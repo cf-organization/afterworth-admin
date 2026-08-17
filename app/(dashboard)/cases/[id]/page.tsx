@@ -29,6 +29,7 @@ import {
   decideCase,
   dispatchOwnerNotice,
   getCase,
+  reissueOwnerNotice,
   reviewEvidence,
   setAttainedLevel
 } from "@/lib/cases/rpc";
@@ -36,9 +37,11 @@ import {
   availability,
   DISPATCH_SUMMARY_COPY,
   dispatchSummary,
+  historicalNoticeDetail,
   LIFECYCLE_COPY,
   meetsRequirement,
-  noticeDeliveryLabel
+  noticeStateLabel,
+  reissueAvailability
 } from "@/lib/cases/lifecycle";
 import { VERIFICATION_LEVELS, type CaseFile, type VerificationLevel } from "@/lib/cases/types";
 import { humanizeError } from "@/lib/errors";
@@ -63,6 +66,7 @@ export default function CaseDetailPage({ params }: { params: { id: string } }) {
   const [basis, setBasis] = useState("");
   const [decisionNote, setDecisionNote] = useState("");
   const [releaseReason, setReleaseReason] = useState("");
+  const [reissueReason, setReissueReason] = useState("");
 
   const load = useCallback(async () => {
     setError(null);
@@ -82,7 +86,7 @@ export default function CaseDetailPage({ params }: { params: { id: string } }) {
    * authority on what the lifecycle now is, and a console that inferred the new state would be a
    * second state machine — the exact duplication Phase 11 spent five sub-phases removing.
    */
-  async function run(key: string, fn: () => Promise<unknown>, success: string) {
+  async function run(key: string, fn: () => Promise<unknown>, success: string): Promise<void> {
     setBusy(key);
     setError(null);
     setNotice(null);
@@ -373,19 +377,43 @@ export default function CaseDetailPage({ params }: { params: { id: string } }) {
         {file.owner_notice.length > 0 && (
           <ul className="mt-3 space-y-2 text-sm">
             {file.owner_notice.map((n) => (
-              <li key={n.id} className="rounded border p-2">
-                <span className="font-medium">{noticeDeliveryLabel(n.status)}</span>
+              <li
+                key={n.id}
+                className={n.is_current ? "rounded border p-2" : "rounded border border-dashed p-2 opacity-80"}
+              >
+                <span className="font-medium">{noticeStateLabel(n)}</span>
                 <span className="text-muted-foreground">
-                  {" "}· {n.channel} · requested {fmt(n.requested_at)} · {n.attempts} attempt
-                  {n.attempts === 1 ? "" : "s"}
+                  {" "}· generation {n.generation} · {n.channel} · requested {fmt(n.requested_at)} ·{" "}
+                  {n.attempts} attempt{n.attempts === 1 ? "" : "s"}
                   {n.failure_class ? ` · ${n.failure_class}` : ""}
                 </span>
+                {/*
+                  A retired generation keeps its delivery state as SECONDARY detail: it is the
+                  evidence that the reissue was warranted, and hiding it would leave an episode that
+                  looks re-noticed for no reason.
+                */}
+                {!n.is_current && (
+                  <p className="mt-1 text-muted-foreground">
+                    Superseded by a later generation — {historicalNoticeDetail(n)}.
+                  </p>
+                )}
+                {/*
+                  ★ THE ACCEPTANCE FACT IS RENDERED AS A FACT, INCLUDING ITS ABSENCE. A `dispatched`
+                  row with no stamp is a pre-Phase-A row: the record is missing, which is not the same
+                  as knowing the provider refused it, and not the same as knowing it was accepted.
+                */}
+                {n.is_current && n.status === "dispatched" && !n.notice_accepted_at && (
+                  <p className="mt-1">
+                    This notice predates provider-acceptance recording, so there is no evidence the
+                    provider ever accepted it. Re-sending produces that evidence.
+                  </p>
+                )}
               </li>
             ))}
           </ul>
         )}
 
-        <div className="mt-4">
+        <div className="mt-4 flex flex-wrap gap-3">
           <LifecycleAction
             label="Dispatch the owner notice"
             availability={availability("dispatch_owner_notice", file)}
@@ -396,6 +424,64 @@ export default function CaseDetailPage({ params }: { params: { id: string } }) {
             busy={busy === "dispatch"}
             onConfirm={() =>
               run("dispatch", () => dispatchOwnerNotice(c.estate_id), "Owner notice dispatch initiated.")
+            }
+          />
+        </div>
+      </Card>
+
+      {/* ── RE-SEND THE OWNER NOTICE (Phase 11-OC / Phase C) ───────────────────────────────── */}
+      <Card className="p-4">
+        <h2 className="font-medium">Re-send the owner safety notice</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Queues a NEW notice for this case and retires the current one. It does not resend the old
+          message, does not change what the owner is told, and does not record that anyone was
+          reached — the new notice starts queued like any other.
+        </p>
+        {/*
+          ★ AVAILABILITY IS THE SERVER'S ANSWER. `owner_notice_reissue` is computed by the same
+          function the routine consults, so this control cannot appear when the door would refuse,
+          and cannot be hidden on an estate the door would accept. The disabled state carries the
+          server's reason, translated to operator copy here.
+        */}
+        <div className="mt-3">
+          <label htmlFor="reissue-reason" className="block text-sm">
+            Reason (required)
+          </label>
+          <input
+            id="reissue-reason"
+            value={reissueReason}
+            onChange={(e) => setReissueReason(e.target.value)}
+            className="mt-1 w-full rounded border px-2 py-1.5 text-sm"
+            placeholder="Recorded permanently on the audit trail"
+          />
+          <p className="mt-1 text-sm text-muted-foreground">
+            Recorded on the audit trail beside both notice generations. The server refuses a blank
+            reason.
+          </p>
+        </div>
+        <div className="mt-3">
+          <LifecycleAction
+            label="Re-send owner safety notice"
+            availability={
+              reissueReason.trim().length === 0 && reissueAvailability(file).available
+                ? { available: false, reason: "Enter a reason before re-sending." }
+                : reissueAvailability(file)
+            }
+            irreversibleConsequence={
+              "This queues a new email to the owner and retires the current notice generation. A " +
+              "queued notice cannot be recalled once the drain sends it, and the owner may receive " +
+              "a second copy of the same warning."
+            }
+            busy={busy === "reissue"}
+            onConfirm={() =>
+              run(
+                "reissue",
+                () => reissueOwnerNotice(c.case_id, reissueReason.trim()),
+                // ★ THE SUCCESS SENTENCE IS THE SERVER'S GUARANTEE AND NOT ONE WORD MORE. It is not
+                // "the owner has been notified", not "sent", not "delivered" — a successful call
+                // means a row was queued.
+                "New notice queued. It has not been sent yet, and no provider acceptance is recorded."
+              ).then(() => setReissueReason(""))
             }
           />
         </div>
