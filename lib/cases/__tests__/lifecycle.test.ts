@@ -34,6 +34,7 @@ import type {
   NoticeStatus,
   ReissueRefusalCode,
   ReissueVerdict,
+  ReleaseAuthority,
   VerificationLevel
 } from "../types";
 
@@ -94,6 +95,11 @@ function makeFile(over: {
   noticeAccepted?: boolean;
   notices?: CaseFileNotice[];
   reissue?: Partial<ReissueVerdict>;
+  /**
+   * ★ PHASE 11-OC / PHASE D. The server's release verdict. `undefined` deliberately means "this
+   * server did not project it" — the pre-Phase-D shape — so the fail-closed branch has a fixture.
+   */
+  authority?: Partial<ReleaseAuthority> | null;
 } = {}): CaseFile {
   const state = over.state ?? "death_verification_pending";
   const noticeStatus = over.noticeStatus === undefined ? null : over.noticeStatus;
@@ -139,6 +145,43 @@ function makeFile(over: {
           })]
         : []),
     owner_notice_reissue: { ...NOT_ELIGIBLE, ...(over.reissue ?? {}) },
+    /**
+     * ★ PHASE D — DEFAULTS DERIVED FROM THE SAME INPUTS THE SERVER WOULD USE, so a fixture cannot
+     * describe a state the server could never produce (elapsed=true with no acceptance fact, say).
+     * `authority: null` models a pre-Phase-D server that projects nothing at all.
+     */
+    release_authority:
+      over.authority === null
+        ? undefined
+        : {
+            ready:
+              state === "challenge_window" &&
+              (over.configured ?? true) &&
+              (over.elapsed ?? false) &&
+              (over.noticeAccepted ?? true),
+            refusal_code: !(over.noticeAccepted ?? true)
+              ? "notice_never_accepted"
+              : state !== "challenge_window"
+                ? "invalid_release_state"
+                : !(over.configured ?? true)
+                  ? "release_window_not_configured"
+                  : !(over.elapsed ?? false)
+                    ? "release_window_not_elapsed"
+                    : null,
+            case_id: "c1",
+            case_is_current: true,
+            lifecycle_state: state,
+            notice_id: "n1",
+            generation: 1,
+            notice_kind: "death_process.window_opened",
+            notice_accepted_at: (over.noticeAccepted ?? true) ? "2026-08-03T00:01:00Z" : null,
+            accepted: over.noticeAccepted ?? true,
+            window_duration: "7 days",
+            window_configured: over.configured ?? true,
+            release_eligible_at: (over.noticeAccepted ?? true) ? "2026-08-10T00:00:00Z" : null,
+            elapsed: over.elapsed ?? false,
+            ...(over.authority ?? {})
+          },
     evidence: [],
     release: {
       reviewer_a: over.decided ? REVIEWER_A : null,
@@ -305,16 +348,65 @@ describe("release, in the routine's own precondition order", () => {
     expect(a.reason).toContain("second operator");
   });
 
-  it("refuses before the window has elapsed", () => {
+  it("refuses before the window has elapsed, and says what the clock runs from", () => {
     const a = availability("authorize_release", makeFile({ ...base, elapsed: false }));
     expect(a.available).toBe(false);
     expect(a.reason).toContain("not elapsed");
+    /**
+     * ★ PHASE D — THE SENTENCE MUST NAME THE ANCHOR. "The window has not elapsed" was true before
+     * and after the cutover, so a test that only checked those words could not tell an operator
+     * (or a reviewer) that the clock had moved. It now runs from provider acceptance, and an
+     * operator staring at a dispatch timestamp seven days old needs to be told why that is not the
+     * relevant date.
+     */
+    expect(a.reason).toContain("provider accepted");
   });
 
   it("refuses when the window is unconfigured, and says it can never elapse", () => {
     const a = availability("authorize_release", makeFile({ ...base, configured: false, elapsed: false }));
     expect(a.available).toBe(false);
     expect(a.reason).toContain("never elapse");
+  });
+
+  /**
+   * ★ THE PHASE D CLASS, AND THE ONE THE OLD CONSOLE GOT WRONG. A notice marked `dispatched` whose
+   * provider acceptance was never recorded used to be indistinguishable from a successful one, so
+   * the console said "the window has not elapsed" — a statement about the clock that quietly
+   * conceded the notice qualified. It never did.
+   */
+  it("refuses a legacy dispatched notice with no acceptance fact, and names the remedy", () => {
+    const a = availability("authorize_release", makeFile({ ...base, noticeAccepted: false }));
+    expect(a.available).toBe(false);
+    expect(a.reason).toContain("has not accepted");
+    expect(a.reason).toContain("Re-send");
+    // ★ AND IT MUST NOT CLAIM DELIVERY. What is missing is the provider's acceptance, not proof
+    // that a mailbox never received anything — this product cannot observe the latter at all.
+    expect(a.reason).not.toMatch(/deliver/i);
+  });
+
+  /**
+   * ★ FAIL CLOSED WHEN THE SERVER SAYS NOTHING. A console talking to a pre-Phase-D server must not
+   * fall back to the local mirror it used to keep: that would judge an IRREVERSIBLE action by a
+   * rule the deployed routine may no longer apply.
+   */
+  it("refuses when the server projects no release authority at all", () => {
+    const a = availability("authorize_release", makeFile({ ...base, authority: null }));
+    expect(a.available).toBe(false);
+    expect(a.reason).toContain("has not reported");
+  });
+
+  /**
+   * ★ THE SERVER IS THE AUTHORITY, EVEN WHEN THE CONSOLE COULD GUESS OTHERWISE. This fixture looks
+   * releasable by every local signal — window elapsed, notice accepted, configured — and the server
+   * says no. The console must obey the server, or it is keeping a second policy after all.
+   */
+  it("obeys a server refusal even when every local signal looks releasable", () => {
+    const a = availability("authorize_release", makeFile({
+      ...base,
+      authority: { ready: false, refusal_code: "notice_episode_mismatch" }
+    }));
+    expect(a.available).toBe(false);
+    expect(a.reason).toContain("current death process");
   });
 
   it("refuses from a halt, permanently and in those words", () => {
@@ -328,10 +420,18 @@ describe("release, in the routine's own precondition order", () => {
     expect(availability("authorize_release", makeFile({ ...base, state: "released" })).available).toBe(false);
   });
 
-  it("refuses without a committed notice even inside an open window", () => {
-    const a = availability("authorize_release", makeFile({ ...base, noticeStatus: "cancelled" }));
+  /**
+   * ★ RETARGETED BY PHASE D. A cancelled notice used to trip the console's own committed-notice
+   * mirror. That mirror is gone from this branch: the server decides, and a cancelled notice has no
+   * acceptance fact, so the refusal now arrives as `notice_never_accepted` — the same answer the
+   * door gives, for the same reason, rather than a locally reconstructed one.
+   */
+  it("refuses a cancelled notice, with the SERVER's reason rather than a local mirror", () => {
+    const a = availability("authorize_release", makeFile({
+      ...base, noticeStatus: "cancelled", noticeAccepted: false
+    }));
     expect(a.available).toBe(false);
-    expect(a.reason).toContain("No owner notice is committed");
+    expect(a.reason).toContain("has not accepted");
   });
 
   /**

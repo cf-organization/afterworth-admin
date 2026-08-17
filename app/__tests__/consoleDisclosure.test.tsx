@@ -66,10 +66,32 @@ const caseFile: CaseFile = {
     released_at: null,
     updated_at: "2026-08-04T00:05:00Z"
   },
+  /**
+   * ★ PHASE 11-OC / PHASE D — THE BASE FIXTURE IS THE LEGACY CLASS ON PURPOSE. The notice is queued
+   * with no provider acceptance, so `release_eligible_at` is NULL: the window runs from acceptance
+   * and there is nothing to anchor on. A fixture that carried a date here would let the screen show
+   * a deadline the server does not recognise and no test would notice.
+   */
   window: {
     duration: "7 days",
     configured: true,
-    release_eligible_at: "2026-08-11T00:00:00Z",
+    release_eligible_at: null,
+    elapsed: false
+  },
+  release_authority: {
+    ready: false,
+    refusal_code: "notice_never_accepted",
+    case_id: "c1",
+    case_is_current: true,
+    lifecycle_state: "challenge_window",
+    notice_id: "n1",
+    generation: 1,
+    notice_kind: "death_process.window_opened",
+    notice_accepted_at: null,
+    accepted: false,
+    window_duration: "7 days",
+    window_configured: true,
+    release_eligible_at: null,
     elapsed: false
   },
   owner_notice: [{
@@ -394,7 +416,12 @@ describe("the two-person rule, as the operator sees it", () => {
     const rpc = await import("@/lib/cases/rpc");
     vi.mocked(rpc.getCase).mockResolvedValueOnce({
       ...caseFile,
-      window: { ...caseFile.window, elapsed: true },
+      window: { ...caseFile.window, elapsed: true, release_eligible_at: "2026-08-11T00:00:00Z" },
+      release_authority: {
+        ...caseFile.release_authority!, ready: true, refusal_code: null, accepted: true,
+        notice_accepted_at: "2026-08-04T00:01:00Z",
+        release_eligible_at: "2026-08-11T00:00:00Z", elapsed: true
+      },
       release: { ...caseFile.release, viewer_is_reviewer_a: true }
     });
 
@@ -422,7 +449,12 @@ describe("the two-person rule, as the operator sees it", () => {
     const rpc = await import("@/lib/cases/rpc");
     vi.mocked(rpc.getCase).mockResolvedValueOnce({
       ...caseFile,
-      window: { ...caseFile.window, elapsed: true },
+      window: { ...caseFile.window, elapsed: true, release_eligible_at: "2026-08-11T00:00:00Z" },
+      release_authority: {
+        ...caseFile.release_authority!, ready: true, refusal_code: null, accepted: true,
+        notice_accepted_at: "2026-08-04T00:01:00Z",
+        release_eligible_at: "2026-08-11T00:00:00Z", elapsed: true
+      },
       release: { ...caseFile.release, viewer_is_reviewer_a: false }
     });
 
@@ -439,7 +471,12 @@ describe("irreversible actions are distinguishable", () => {
     const rpc = await import("@/lib/cases/rpc");
     vi.mocked(rpc.getCase).mockResolvedValueOnce({
       ...caseFile,
-      window: { ...caseFile.window, elapsed: true }
+      window: { ...caseFile.window, elapsed: true, release_eligible_at: "2026-08-11T00:00:00Z" },
+      release_authority: {
+        ...caseFile.release_authority!, ready: true, refusal_code: null, accepted: true,
+        notice_accepted_at: "2026-08-04T00:01:00Z",
+        release_eligible_at: "2026-08-11T00:00:00Z", elapsed: true
+      }
     });
 
     render(<CaseDetailPage params={{ id: "c1" }} />);
@@ -459,7 +496,12 @@ describe("irreversible actions are distinguishable", () => {
     const rpc = await import("@/lib/cases/rpc");
     vi.mocked(rpc.getCase).mockResolvedValueOnce({
       ...caseFile,
-      window: { ...caseFile.window, elapsed: true }
+      window: { ...caseFile.window, elapsed: true, release_eligible_at: "2026-08-11T00:00:00Z" },
+      release_authority: {
+        ...caseFile.release_authority!, ready: true, refusal_code: null, accepted: true,
+        notice_accepted_at: "2026-08-04T00:01:00Z",
+        release_eligible_at: "2026-08-11T00:00:00Z", elapsed: true
+      }
     });
 
     render(<CaseDetailPage params={{ id: "c1" }} />);
@@ -474,12 +516,43 @@ describe("irreversible actions are distinguishable", () => {
 });
 
 describe("unavailable actions explain themselves on screen", () => {
-  it("disables the release and shows the lifecycle reason", async () => {
-    // The default fixture has an un-elapsed window.
+  /**
+   * ★ PHASE 11-OC / PHASE D — TWO DIFFERENT UNAVAILABILITIES, AND THE SCREEN MUST DISTINGUISH THEM.
+   *
+   * The default fixture is the LEGACY class: a notice that reached `dispatched` (or is still queued)
+   * with no record that the provider ever accepted it. Before Phase D the console said "the
+   * challenge window has not elapsed" here — a statement about the CLOCK that quietly conceded the
+   * notice qualified, and told the operator to WAIT when the correct action was to RE-SEND.
+   */
+  it("disables the release and says the provider never accepted the notice", async () => {
     render(<CaseDetailPage params={{ id: "c1" }} />);
     await screen.findByRole("heading", { name: "Release authorization" });
 
     expect(screen.getByRole("button", { name: /authorize the release/i })).toBeDisabled();
-    expect(screen.getByText(/challenge window has not elapsed/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/provider has not accepted/i).length).toBeGreaterThan(0);
+    // ★ AND IT MUST NOT TELL THE OPERATOR TO WAIT. That is the wrong action for this state.
+    expect(screen.queryByText(/challenge window has not elapsed/i)).not.toBeInTheDocument();
+  });
+
+  it("shows the CLOCK reason only once an acceptance fact exists", async () => {
+    const restore = { win: caseFile.window, auth: caseFile.release_authority };
+    caseFile.window = { ...caseFile.window, release_eligible_at: "2026-08-11T00:00:00Z" };
+    caseFile.release_authority = {
+      ...restore.auth!, ready: false, refusal_code: "release_window_not_elapsed",
+      accepted: true, notice_accepted_at: "2026-08-04T00:01:00Z",
+      release_eligible_at: "2026-08-11T00:00:00Z"
+    };
+    render(<CaseDetailPage params={{ id: "c1" }} />);
+    await screen.findByRole("heading", { name: "Release authorization" });
+
+    expect(screen.getByRole("button", { name: /authorize the release/i })).toBeDisabled();
+    expect(screen.getAllByText(/challenge window has not elapsed/i).length).toBeGreaterThan(0);
+    // ★ THE SENTENCE NAMES THE ANCHOR. An operator looking at a dispatch timestamp seven days old
+    // must be told why that is not the date the clock runs from.
+    expect(screen.getAllByText(/provider accepted the owner safety notice/i).length)
+      .toBeGreaterThan(0);
+
+    caseFile.window = restore.win;
+    caseFile.release_authority = restore.auth;
   });
 });

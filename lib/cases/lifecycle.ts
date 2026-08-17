@@ -21,6 +21,7 @@ import type {
   CaseFileNotice,
   LifecycleState,
   ReissueRefusalCode,
+  ReleaseRefusalCode,
   VerificationLevel,
 } from "./types";
 import { VERIFICATION_LEVELS } from "./types";
@@ -65,14 +66,28 @@ export function meetsRequirement(file: CaseFile): boolean {
 }
 
 /**
- * Is there a committed, non-cancelled email row? This is the exact predicate
- * `begin_challenge_window` and `authorize_release` both apply — and note what it is NOT: it does
- * not require `dispatched`. The deployed contract is DISPATCH INITIATION, so a `queued` notice
- * satisfies the door. The console must agree with the door here and say something different to the
- * operator about delivery; see `noticeDeliveryLabel`.
+ * Is there a committed email notice for this episode?
+ *
+ * ★ PHASE 11-OC / PHASE D NARROWED THIS TO ONE CALLER, AND REMOVED IT FROM THE RELEASE DOOR.
+ *
+ * It used to mirror the predicate BOTH doors applied: an email row on the estate with
+ * `status !== "cancelled"`. That predicate is gone from the server. `begin_challenge_window` now
+ * requires a committed email notice for the CURRENT CASE EPISODE, and `authorize_release` requires
+ * provider acceptance decided by `owner_notice_release_authority` — a rule this file must not
+ * restate, and no longer does.
+ *
+ * What survives here is the WINDOW-door mirror only, and it is deliberately still a mirror rather
+ * than a server verdict: opening the window is reversible-ish in operator terms, discloses nothing,
+ * and its precondition is a simple existence test. The IRREVERSIBLE door gets the server's answer.
+ *
+ * ★ IT READS `is_current`, NOT "any row". The server's check is scoped to the current generation of
+ * the current episode. A console matching any historical row would offer the control on an estate
+ * whose only notice belongs to a death process that was rejected months ago.
  */
 export function hasCommittedNotice(file: CaseFile): boolean {
-  return file.owner_notice.some((n) => n.channel === "email" && n.status !== "cancelled");
+  return file.owner_notice.some(
+    (n) => n.channel === "email" && n.is_current && n.status !== "cancelled"
+  );
 }
 
 export function availability(action: ActionId, file: CaseFile): ActionAvailability {
@@ -129,27 +144,55 @@ export function availability(action: ActionId, file: CaseFile): ActionAvailabili
       return AVAILABLE;
 
     case "authorize_release": {
-      // authorize_release, in the ORDER the routine checks — so the reason the console shows is the
-      // reason the routine would give.
+      /**
+       * ★ PHASE 11-OC / PHASE D — THE OWNER-NOTICE HALF OF THIS DECISION IS THE SERVER'S, NOT OURS.
+       *
+       * This branch used to mirror the whole routine: a committed-notice test, a `configured` test
+       * and a `window.elapsed` test, all local. Every one of those was a faithful copy of a
+       * predicate that has since changed, and the copy is the hazard — on the one IRREVERSIBLE door
+       * in this product, a console and a server holding two opinions is the worst place in the
+       * system for them to drift.
+       *
+       * So the notice qualification, the episode match and the clock now come from
+       * `release_authority`, computed by the SAME function `authorize_release` consults. This file
+       * still owns the SENTENCE, and still owns the two checks that are genuinely client-side
+       * concerns (the terminal states, and the reviewer-A affordance the server hands us).
+       *
+       * ★ THE LOCAL STATE CHECKS SURVIVE ABOVE THE SERVER VERDICT, DELIBERATELY. `released` and
+       * `challenge_halted` deserve their own sentences — "already released" and "the owner halted
+       * this" are different operator situations, and the authority collapses both into
+       * `invalid_release_state`. Keeping them is copy, not policy: the server refuses either way.
+       */
       if (state === "released") return UNAVAILABLE("This estate has already been released.");
       if (state === "challenge_halted") {
         return UNAVAILABLE("The owner halted this process. Release can never proceed from a halt.");
       }
-      if (state !== "challenge_window") {
-        return UNAVAILABLE(`The estate is ${state}. Release proceeds only from an open window.`);
+
+      const authority = file.release_authority;
+      /**
+       * ★ FAIL CLOSED ON A MISSING VERDICT — the `reissueAvailability` discipline, applied to a
+       * higher-stakes door. A server that predates Phase D does not project this. Falling back to
+       * the old local mirror would offer an irreversible action judged by a rule the deployed
+       * routine may no longer apply, which is precisely the drift this change removes.
+       */
+      if (!authority) {
+        return UNAVAILABLE(
+          "This server has not reported whether the owner safety notice permits a release, so the " +
+            "action is unavailable."
+        );
       }
-      if (!hasCommittedNotice(file)) {
-        return UNAVAILABLE("No owner notice is committed for this estate.");
-      }
-      if (!file.window.configured) {
-        return UNAVAILABLE("The challenge window is not configured, so it can never elapse.");
-      }
-      if (!file.window.elapsed) {
-        return UNAVAILABLE("The challenge window has not elapsed.");
+      if (!authority.ready) {
+        return UNAVAILABLE(
+          (authority.refusal_code && RELEASE_REFUSAL_COPY[authority.refusal_code]) ??
+            "The server will not permit a release for this case, and gave no reason this console recognises."
+        );
       }
       // ★ THE TWO-PERSON RULE, TAKEN FROM THE SERVER. `viewer_is_reviewer_a` is derived inside the
       // definer from auth.uid(); this console reads it and never recomputes it from ids it was
       // handed. `authorize_release` re-checks distinctness independently regardless.
+      //
+      // It is checked LAST so a reviewer-A operator still sees WHY the estate is not releasable,
+      // rather than being told only that they personally may not do it.
       if (file.release.viewer_is_reviewer_a) {
         return UNAVAILABLE(
           "You decided this case, so you are the first reviewer. A second operator must authorize the release."
@@ -295,6 +338,47 @@ export const DISPATCH_SUMMARY_COPY: Record<DispatchSummary, string> = {
   delivery_uncertain: "Provider outcome uncertain — it will not be retried",
   settled_stale: "Notice settled as stale — never sent",
   notice_cancelled: "Notice cancelled",
+};
+
+/**
+ * ★ PHASE 11-OC / PHASE D — OPERATOR COPY FOR EVERY OWNER-NOTICE RELEASE REFUSAL.
+ *
+ * The server owns the rule; the console owns the sentence. Each of these describes the ESTATE's
+ * situation and the operator's next action — never a permission, and never a claim this product
+ * cannot substantiate.
+ *
+ * ★ THE WORD "DELIVERED" APPEARS NOWHERE, AND ITS ABSENCE IS ASSERTED BY TEST. What the database
+ * knows is that the email PROVIDER ACCEPTED the message. Whether it reached a mailbox, or a person,
+ * is not observed by this product at any layer. A sentence claiming delivery would be the console
+ * manufacturing the exact fact Phase D exists to stop being manufactured — on the screen where an
+ * operator decides whether to disclose an estate irreversibly.
+ *
+ * ★ AND NONE OF THEM DESCRIBES INTERNAL STATE. `notice_never_accepted`, `superseded_by` and
+ * `generation` are vocabulary for this file's authors, not for the person reading the screen.
+ */
+export const RELEASE_REFUSAL_COPY: Record<ReleaseRefusalCode, string> = {
+  case_not_found: "This case no longer exists.",
+  no_verified_case: "This estate has no verified death-verification case.",
+  notice_episode_mismatch:
+    "This is not the estate's current death process. A later case has been verified, and only a " +
+    "notice belonging to that case can support a release.",
+  invalid_release_state:
+    "Release proceeds only from an open window.",
+  no_current_notice:
+    "No owner safety notice exists for this case. It needs a dispatch before a release can be " +
+    "considered.",
+  // ★ THE SENTENCE THIS WHOLE PHASE IS FOR. It says what is missing (a record of the provider
+  // accepting the message), what is NOT claimed (delivery, or that anyone read it), and what the
+  // operator does next (re-send, which is the Phase C control on the same screen).
+  notice_never_accepted:
+    "The email provider has not accepted the owner safety notice for this case, so there is no " +
+    "record that the warning was ever sent. Re-send the notice and wait for the challenge window " +
+    "to run from the point the provider accepts it.",
+  release_window_not_configured:
+    "The challenge window is not configured, so it can never elapse and no release can proceed.",
+  release_window_not_elapsed:
+    "The challenge window has not elapsed. It runs from the point the email provider accepted the " +
+    "owner safety notice, not from when the notice was queued.",
 };
 
 /**
