@@ -41,7 +41,8 @@ import {
   LIFECYCLE_COPY,
   meetsRequirement,
   noticeStateLabel,
-  reissueAvailability
+  reissueAvailability,
+  RELEASE_REFUSAL_COPY
 } from "@/lib/cases/lifecycle";
 import { VERIFICATION_LEVELS, type CaseFile, type VerificationLevel } from "@/lib/cases/types";
 import { humanizeError } from "@/lib/errors";
@@ -491,23 +492,75 @@ export default function CaseDetailPage({ params }: { params: { id: string } }) {
       <Card className="p-4">
         <h2 className="font-medium">Challenge window</h2>
         <dl className="mt-3 grid gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
+          {/*
+            ★ PHASE 11-OC / PHASE D — THE LABEL CHANGED BECAUSE THE MEANING DID.
+            "Owner notified at" claimed something this product cannot observe: it is stamped when the
+            outbox row is QUEUED, before any worker has run, so it says an operator initiated a
+            dispatch and nothing about whether a message left the building. It is kept because an
+            operator reconstructing a case needs it — under a name that is true.
+          */}
           <div>
-            <dt className="text-muted-foreground">Owner notified at</dt>
+            <dt className="text-muted-foreground">Notice dispatch started</dt>
             <dd>{fmt(file.lifecycle.owner_notified_at)}</dd>
           </div>
           <div>
             <dt className="text-muted-foreground">Window opened at</dt>
             <dd>{fmt(file.lifecycle.challenge_window_started_at)}</dd>
           </div>
+          {/*
+            ★ THE FACT THE CLOCK NOW RUNS FROM, NAMED FOR WHAT IT IS. "Provider accepted" is exactly
+            what the database knows — not delivered, not received, not read — and the word
+            "Delivered" is asserted absent from this console by test.
+          */}
+          <div>
+            {/*
+              ★ THE LABEL IS A NEUTRAL NOUN, DELIBERATELY. "Provider accepted notice" is the exact
+              sentence `noticeStateLabel` uses to report that acceptance HAPPENED, and a field label
+              carrying it would put those words on screen for every case — including the legacy ones
+              whose whole problem is that nobody knows. The label names the QUESTION; the value below
+              answers it.
+            */}
+            <dt className="text-muted-foreground">Provider acceptance</dt>
+            <dd>
+              {file.release_authority?.notice_accepted_at
+                ? fmt(file.release_authority.notice_accepted_at)
+                : "No provider acceptance recorded"}
+            </dd>
+          </div>
           <div>
             <dt className="text-muted-foreground">Release becomes possible</dt>
-            <dd>{file.window.configured ? fmt(file.window.release_eligible_at) : "Not configured"}</dd>
+            <dd>
+              {!file.window.configured
+                ? "Not configured"
+                : file.window.release_eligible_at
+                  ? fmt(file.window.release_eligible_at)
+                  : /*
+                      NULL is a real answer, not a blank to fill in. The window runs from provider
+                      acceptance, so with no acceptance there is no date — and inventing one from
+                      the dispatch timestamp would show a deadline the server does not recognise.
+                    */
+                    "Not yet — the window runs from provider acceptance"}
+            </dd>
           </div>
           <div>
             <dt className="text-muted-foreground">Elapsed</dt>
             <dd>{file.window.elapsed ? "Yes" : "No"}</dd>
           </div>
         </dl>
+        {/*
+          ★ WHY A RELEASE IS UNAVAILABLE, IN ONE SENTENCE, FROM THE SERVER'S OWN VERDICT. Without
+          this an operator sees "Elapsed: No" beside a disabled control and has no way to tell
+          "wait seven days" from "nothing was ever sent — re-send it". Those need opposite actions,
+          and one of them is on this same screen.
+        */}
+        {file.release_authority && !file.release_authority.ready &&
+          file.lifecycle.state === "challenge_window" && (
+            <p className="mt-3 text-sm">
+              {(file.release_authority.refusal_code &&
+                RELEASE_REFUSAL_COPY[file.release_authority.refusal_code]) ??
+                "The server will not permit a release for this case."}
+            </p>
+          )}
         {!file.window.configured && (
           <p className="mt-3 text-sm">
             No window duration is configured, so the window can never elapse and release will be

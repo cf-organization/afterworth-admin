@@ -41,6 +41,13 @@ const caseFile: CaseFile = {
     challenge_window_started_at: null, halted_at: null, released_at: null, updated_at: null
   },
   window: { duration: "7 days", configured: true, release_eligible_at: null, elapsed: false },
+  // Phase D: this estate has not even reached the window, so the authority refuses on state.
+  release_authority: {
+    ready: false, refusal_code: "invalid_release_state", case_id: "c1", case_is_current: true,
+    lifecycle_state: "death_verification_pending", notice_id: null, generation: null,
+    notice_kind: null, notice_accepted_at: null, accepted: false, window_duration: "7 days",
+    window_configured: true, release_eligible_at: null, elapsed: false
+  },
   owner_notice: [],
   evidence: [{
     evidence_id: "ev1", document_id: "d1", title: "Death certificate",

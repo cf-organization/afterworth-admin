@@ -150,6 +150,58 @@ export interface ReissueVerdict {
   reissue_reason: string | null;
 }
 
+/**
+ * Every reason the server will refuse a RELEASE on owner-notice grounds, as the server names them
+ * (Phase 11-OC / Phase D).
+ *
+ * ★ THE SAME DISCIPLINE AS `ReissueRefusalCode`, ON A HIGHER-STAKES DOOR. This union mirrors a
+ * server vocabulary and decides nothing: `owner_notice_release_authority` decides, the case file
+ * carries its verdict, and `authorize_release` re-checks independently every time. What lives on
+ * the client is the OPERATOR COPY, which is the console's own job.
+ *
+ * ★ `notice_never_accepted` IS NOT `notice_not_delivered`, AND THE NAMING IS LOAD-BEARING. What the
+ * database knows is whether the email PROVIDER ACCEPTED the message. Mailbox delivery is not
+ * observed by this product at all, so a code — or a sentence — claiming it would be the console
+ * inventing the one fact this phase exists to stop being invented.
+ */
+export type ReleaseRefusalCode =
+  | "case_not_found"
+  | "no_verified_case"
+  | "notice_episode_mismatch"
+  | "invalid_release_state"
+  | "no_current_notice"
+  | "notice_never_accepted"
+  | "release_window_not_configured"
+  | "release_window_not_elapsed";
+
+/**
+ * The server's verdict on whether the owner-notice preconditions for a release are met, computed by
+ * the SAME function `authorize_release` consults.
+ *
+ * ★ IT IS NOT A PERMISSION, AND THE FIELDS IT DOES NOT HAVE SAY SO. There is no reviewer identity,
+ * no admin flag and no recipient address on any branch. The two-person rule, the admin gate and the
+ * audit reason are all re-checked inside the routine; this makes the affordance TRUTHFUL and grants
+ * nothing.
+ */
+export interface ReleaseAuthority {
+  ready: boolean;
+  refusal_code: ReleaseRefusalCode | null;
+  case_id: string;
+  case_is_current: boolean;
+  lifecycle_state: LifecycleState;
+  notice_id: string | null;
+  generation: number | null;
+  notice_kind: string | null;
+  /** PROVIDER ACCEPTANCE, never mailbox delivery. NULL is a real answer and must render as one. */
+  notice_accepted_at: string | null;
+  accepted: boolean;
+  window_duration: string | null;
+  window_configured: boolean;
+  /** Anchored on the acceptance fact. NULL until there is one — never derived from provenance. */
+  release_eligible_at: string | null;
+  elapsed: boolean;
+}
+
 /** What `reissue_owner_safety_notice` returns. There is no recipient field, on any branch. */
 export interface ReissueResult {
   status: "queued";
@@ -198,6 +250,13 @@ export interface CaseFile {
     released_at: string | null;
     updated_at: string | null;
   };
+  /**
+   * ★ PHASE 11-OC / PHASE D — THESE ARE NOW PROJECTIONS OF `release_authority`, NOT A SECOND CLOCK.
+   * The shape is unchanged so an older console keeps parsing, but `release_eligible_at` is anchored
+   * on `notice_accepted_at` rather than on `owner_notified_at`, and is NULL until there is an
+   * acceptance fact to anchor on. A client that filled that NULL in from the lifecycle timestamp
+   * would show an operator a deadline the server does not recognise.
+   */
   window: {
     duration: string | null;
     configured: boolean;
@@ -205,6 +264,16 @@ export interface CaseFile {
     elapsed: boolean;
   };
   owner_notice: CaseFileNotice[];
+  /**
+   * Server-calculated release authority (Phase 11-OC / Phase D). The console offers AUTHORIZE
+   * RELEASE only when this says `ready`, so the two cannot drift on the one irreversible door.
+   *
+   * ★ OPTIONAL, AND THAT IS A FAIL-CLOSED DECISION. A server that predates Phase D does not project
+   * it; `availability` must then produce an UNAVAILABLE control rather than fall back to the local
+   * mirror it used to keep. Assuming availability when the server has said nothing is how a console
+   * offers an irreversible action against a routine that may not be deployed.
+   */
+  release_authority?: ReleaseAuthority;
   /**
    * Server-calculated action availability for the Phase C re-notice. NOT a local mirror: the console
    * offers the control iff this says `eligible`, so the two cannot drift.
